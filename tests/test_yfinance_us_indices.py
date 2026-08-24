@@ -89,6 +89,23 @@ class TestFetchYfTickerData(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result['change_pct'], 0.0)
 
+    def test_raw_history_converts_inclusive_end_to_yahoo_exclusive_end(self):
+        mock_yf = MagicMock()
+        mock_yf.download.return_value = pd.DataFrame(
+            {"Close": [5000.0]},
+            index=pd.DatetimeIndex(["2026-05-08"]),
+        )
+
+        with patch.dict(sys.modules, {"yfinance": mock_yf}):
+            result = self.fetcher._fetch_raw_data(
+                "SPX",
+                "2026-05-01",
+                "2026-05-08",
+            )
+
+        self.assertFalse(result.empty)
+        self.assertEqual(mock_yf.download.call_args.kwargs["end"], "2026-05-09")
+
 
 class TestGetUsMainIndices(unittest.TestCase):
     """_get_us_main_indices 美股指数批量获取测试"""

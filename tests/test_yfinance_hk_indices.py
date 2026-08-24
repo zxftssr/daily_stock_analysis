@@ -80,6 +80,20 @@ class TestHkIndexSymbolMapping(unittest.TestCase):
         self.assertNotIn('^HSTECH', ticker_calls, '^HSTECH 不是有效的 Yahoo Finance 符号')
         self.assertNotIn('^HSCEI', ticker_calls, '^HSCEI 不是有效的 Yahoo Finance 符号')
 
+    def test_daily_history_aliases_convert_to_yahoo_symbols(self):
+        expected = {
+            'HSI': '^HSI',
+            'HSCEI': '^HSCE',
+            'HSTECH': 'HSTECH.HK',
+            'AAPL.US': 'AAPL',
+        }
+        for symbol, yahoo_symbol in expected.items():
+            with self.subTest(symbol=symbol):
+                self.assertEqual(
+                    self.fetcher._convert_stock_code(symbol),
+                    yahoo_symbol,
+                )
+
 
 class TestGetHkMainIndices(unittest.TestCase):
     """_get_hk_main_indices 港股指数批量获取测试"""

@@ -218,6 +218,31 @@ def _reload_env_file_values_preserving_overrides() -> None:
     _RUNTIME_ENV_FILE_KEYS = managed_keys
 
 
+def _evaluate_investment_plans(
+    *,
+    notifier: Any,
+    send_notification: bool,
+    markets: Optional[set[str]] = None,
+) -> Dict[str, Any]:
+    """Evaluate active user plans without making the daily analysis fail."""
+    from src.services.investment_plan_service import InvestmentPlanService
+
+    service = InvestmentPlanService(notifier=notifier)
+    return service.evaluate_active_plans(
+        send_notification=send_notification,
+        markets=markets,
+    )
+
+
+def _get_plan_evaluation_markets(config: Config, args: argparse.Namespace) -> Optional[set[str]]:
+    """Return markets eligible for scheduled plan checks; None means fail-open/all."""
+    if getattr(args, "force_run", False) or not getattr(config, "trading_day_check_enabled", True):
+        return None
+    from src.core.trading_calendar import get_open_markets_today
+
+    return set(get_open_markets_today())
+
+
 def parse_arguments() -> argparse.Namespace:
     """解析命令行参数"""
     parser = argparse.ArgumentParser(
@@ -457,12 +482,15 @@ def run_full_analysis(
 
     这是定时任务调用的主函数
     """
-    # Import pipeline modules outside the broad try/except so that import-time
-    # failures propagate to the caller instead of being silently swallowed.
-    from src.core.market_review import run_market_review
-    from src.core.pipeline import StockAnalysisPipeline
-
+    pipeline = None
+    pipeline_imports_ready = False
     try:
+        # Keep imports inside the outer try so plan evaluation in ``finally``
+        # remains independent, while re-raising import failures to the caller.
+        from src.core.market_review import run_market_review
+        from src.core.pipeline import StockAnalysisPipeline
+
+        pipeline_imports_ready = True
         # Issue #529: Hot-reload STOCK_LIST from .env on each scheduled run
         if stock_codes is None:
             config.refresh_stock_list()
@@ -474,7 +502,7 @@ def run_full_analysis(
         )
         if should_skip:
             logger.info(
-                "今日所有相关市场均为非交易日，跳过执行。可使用 --force-run 强制执行。"
+                "今日自选股与大盘复盘相关市场均为非交易日，跳过对应分析。"
             )
             return
         if set(filtered_codes) != set(effective_codes):
@@ -641,7 +669,28 @@ def run_full_analysis(
             logger.warning(f"自动回测失败（已忽略）: {e}")
 
     except Exception as e:
+        if not pipeline_imports_ready:
+            raise
         logger.exception(f"分析流程执行失败: {e}")
+    finally:
+        # Deterministic user plans are an independent scheduled responsibility.
+        # They still run when the AI/report pipeline fails or the watchlist is closed.
+        if not args.dry_run:
+            try:
+                plan_stats = _evaluate_investment_plans(
+                    notifier=getattr(pipeline, "notifier", None),
+                    send_notification=not args.no_notify,
+                    markets=_get_plan_evaluation_markets(config, args),
+                )
+                logger.info(
+                    "策略计划检查完成: evaluated=%s triggered=%s errors=%s notification_sent=%s",
+                    plan_stats.get("evaluated", 0),
+                    plan_stats.get("triggered", 0),
+                    len(plan_stats.get("errors") or []),
+                    (plan_stats.get("notification") or {}).get("sent", False),
+                )
+            except Exception as exc:
+                logger.warning("策略计划检查失败（已忽略）: %s", exc, exc_info=True)
 
 
 def start_api_server(host: str, port: int, config: Config) -> None:

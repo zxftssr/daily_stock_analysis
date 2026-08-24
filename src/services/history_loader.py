@@ -19,7 +19,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 _CACHE_MIN_RECORDS = 30
-_HISTORY_MAX_DAYS = 365
+_HISTORY_MAX_DAYS = 550
 _WINDOW_MIN_WEEKDAY_COVERAGE = 0.60
 
 # ---------------------------------------------------------------------------
@@ -306,6 +306,8 @@ def load_history_snapshot(
             days=effective_days,
         )
         if df is not None and not df.empty:
+            latest_external_date = _latest_df_date(df)
+            external_stale = latest_external_date is None or latest_external_date < end
             _, normalized_code = _history_code_candidates(stock_code)
             if db is None:
                 try:
@@ -325,11 +327,16 @@ def load_history_snapshot(
                 df=df,
                 source=source or "unknown",
                 cache_hit=False,
-                stale=False,
+                stale=external_stale,
                 requested_days=requested_days,
                 effective_days=effective_days,
                 start=start,
                 end=end,
+                partial_cache=external_stale,
+                message=(
+                    "外部行情未覆盖最近完整交易日，正在展示过期 K 线数据。"
+                    if external_stale else None
+                ),
             )
     except Exception as e:
         logger.warning("load_history_snapshot(%s): DataFetcherManager failed: %s", stock_code, e)

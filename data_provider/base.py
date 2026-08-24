@@ -1169,8 +1169,13 @@ class DataFetcherManager:
         from .us_index_mapping import is_us_index_code, is_us_stock_code
 
         raw_stock_code = (stock_code or "").strip()
-        # Normalize code (strip SH/SZ prefix etc.)
-        stock_code = normalize_stock_code(stock_code)
+        raw_upper = raw_stock_code.upper()
+        hk_index_aliases = {"HSI", "HSCEI", "HSTECH"}
+        # Normalize provider-facing aliases before market routing.
+        if raw_upper.endswith(".US"):
+            stock_code = raw_upper[:-3]
+        else:
+            stock_code = normalize_stock_code(raw_stock_code)
 
         fetchers = self._get_fetchers_snapshot()
         errors = []
@@ -1180,12 +1185,22 @@ class DataFetcherManager:
         #   - 配置长桥凭据后: Longbridge 为首选, 其余来源按 priority 兜底
         #   - 未配置长桥:     美股来源按 priority 排序, 港股走通用 fetcher 循环
         #   - 美股指数:       始终 YFinance 为首选（Longbridge 不提供指数K线）
-        is_us_index = is_us_index_code(stock_code)
-        is_us = is_us_index or is_us_stock_code(stock_code)
-        is_hk = (not is_us) and _is_hk_market(stock_code)
+        is_hk_index = stock_code.upper() in hk_index_aliases
+        is_us_index = (not is_hk_index) and is_us_index_code(stock_code)
+        is_us = (not is_hk_index) and (
+            is_us_index or is_us_stock_code(stock_code)
+        )
+        is_hk = is_hk_index or ((not is_us) and _is_hk_market(stock_code))
         if is_hk:
             fetchers = self._filter_daily_fetchers_for_market(fetchers, "hk")
         fetchers = self._filter_fetchers_by_capability(fetchers, capability="daily_data")
+        if is_hk_index:
+            # Public/other fetchers may reinterpret alphabetic HK aliases as US
+            # tickers. Yahoo owns the explicit HSI/HSCEI/HSTECH mapping.
+            fetchers = [
+                fetcher for fetcher in fetchers
+                if fetcher.name == "YfinanceFetcher"
+            ]
         fetchers = self._filter_fetchers_for_exchange_identity(fetchers, raw_stock_code)
         total_fetchers = len(fetchers)
 

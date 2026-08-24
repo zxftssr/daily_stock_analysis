@@ -71,6 +71,68 @@ def _make_daily_df() -> pd.DataFrame:
 
 class TestFetcherSourceOptimization(unittest.TestCase):
     @patch("src.config.get_config")
+    def test_daily_history_routes_hk_aliases_and_us_suffix_consistently(self, mock_get_config):
+        mock_get_config.return_value = SimpleNamespace(
+            longbridge_app_key="",
+            longbridge_app_secret="",
+            longbridge_access_token="",
+        )
+        yfinance = MagicMock()
+        yfinance.name = "YfinanceFetcher"
+        yfinance.priority = 4
+        yfinance.get_daily_data.return_value = _make_daily_df()
+        manager = DataFetcherManager(fetchers=[yfinance])
+
+        expected = {
+            "HSI": "HSI",
+            "HSCEI": "HSCEI",
+            "HSTECH": "HSTECH",
+            "AAPL.US": "AAPL",
+        }
+        for raw_symbol, routed_symbol in expected.items():
+            with self.subTest(symbol=raw_symbol):
+                yfinance.get_daily_data.reset_mock()
+                df, source = manager.get_daily_data(
+                    raw_symbol,
+                    start_date="2026-05-01",
+                    end_date="2026-05-08",
+                )
+                self.assertFalse(df.empty)
+                self.assertEqual(source, "YfinanceFetcher")
+                self.assertEqual(
+                    yfinance.get_daily_data.call_args.kwargs["stock_code"],
+                    routed_symbol,
+                )
+
+    def test_hk_index_aliases_skip_higher_priority_public_market(self):
+        public_market = MagicMock()
+        public_market.name = "PublicMarketFetcher"
+        public_market.priority = 0
+        public_market.get_daily_data.return_value = _make_daily_df()
+        yfinance = MagicMock()
+        yfinance.name = "YfinanceFetcher"
+        yfinance.priority = 4
+        yfinance.get_daily_data.return_value = _make_daily_df()
+        manager = DataFetcherManager(fetchers=[public_market, yfinance])
+
+        for symbol in ("HSI", "HSCEI", "HSTECH"):
+            with self.subTest(symbol=symbol):
+                public_market.get_daily_data.reset_mock()
+                yfinance.get_daily_data.reset_mock()
+                df, source = manager.get_daily_data(
+                    symbol,
+                    start_date="2026-05-01",
+                    end_date="2026-05-08",
+                )
+                self.assertFalse(df.empty)
+                self.assertEqual(source, "YfinanceFetcher")
+                public_market.get_daily_data.assert_not_called()
+                self.assertEqual(
+                    yfinance.get_daily_data.call_args.kwargs["stock_code"],
+                    symbol,
+                )
+
+    @patch("src.config.get_config")
     def test_manager_skips_unconfigured_optional_fetchers(self, mock_get_config):
         mock_get_config.return_value = SimpleNamespace(
             tushare_token="",

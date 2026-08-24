@@ -52,6 +52,16 @@ describe('SidebarNav', () => {
     expect(screen.getByRole('link', { name: '候选' })).toHaveAttribute('href', '/candidates');
   });
 
+  it('renders the investment plan navigation entry', () => {
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <SidebarNav />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('link', { name: '策略计划' })).toHaveAttribute('href', '/plans');
+  });
+
   it('shows the shared completion badge only when chat completion is pending', () => {
     completionBadgeState.value = true;
 

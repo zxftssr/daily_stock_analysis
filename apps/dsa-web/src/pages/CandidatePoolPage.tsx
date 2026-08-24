@@ -4,6 +4,7 @@ import {
   ChartCandlestick,
   Filter,
   MessageSquareQuote,
+  ListChecks,
   Play,
   Search,
   ShieldAlert,
@@ -383,6 +384,14 @@ const CandidatePoolPage: React.FC = () => {
     setKLineStock({ code: stockCode, name: stockName });
   }, []);
 
+  const handleCreatePlan = useCallback((stockCode: string, stockName: string, stockMarket: Market) => {
+    navigate(
+      `/plans?symbol=${encodeURIComponent(stockCode)}`
+      + `&name=${encodeURIComponent(stockName)}`
+      + `&market=${encodeURIComponent(stockMarket)}`,
+    );
+  }, [navigate]);
+
   return (
     <AppPage data-testid="candidate-page" className="max-w-[2160px] space-y-4">
       <section className="rounded-lg border border-border bg-card p-4 shadow-sm">
@@ -518,7 +527,7 @@ const CandidatePoolPage: React.FC = () => {
                     <th className="px-3 py-2 text-right font-medium">成交量</th>
                     <th className="px-3 py-2 font-medium">行情状态</th>
                     <th className="px-3 py-2 font-medium">理由</th>
-                    <th className="w-[286px] px-3 py-2 text-right font-medium">操作</th>
+                    <th className="w-[326px] px-3 py-2 text-right font-medium">操作</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -579,6 +588,17 @@ const CandidatePoolPage: React.FC = () => {
                               aria-label={`查看 ${item.name} K线`}
                             >
                               <ChartCandlestick className="h-4 w-4" />
+                            </Button>
+                          </Tooltip>
+                          <Tooltip content="制定策略计划">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="w-9 px-0"
+                              onClick={() => handleCreatePlan(item.code, item.name, item.market)}
+                              aria-label={`为 ${item.name} 制定策略计划`}
+                            >
+                              <ListChecks className="h-4 w-4" />
                             </Button>
                           </Tooltip>
                           <Button

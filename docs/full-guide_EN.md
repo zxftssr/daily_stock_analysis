@@ -35,6 +35,7 @@ daily_stock_analysis/
 - [Data Source Configuration](#data-source-configuration)
 - [Advanced Features](#advanced-features)
 - [Backtesting](#backtesting)
+- [Investment Strategy Plans](#investment-strategy-plans)
 - [Local WebUI Management Interface](#local-webui-management-interface)
 
 ---
@@ -1009,6 +1010,46 @@ Backtesting triggers automatically after the daily analysis flow completes (non-
 
 ---
 
+## Investment Strategy Plans
+
+The Web **Strategy Plans** workspace turns a user-authored investment thesis into deterministic execution checkpoints. The first version provides six plan labels—index crash, swing, dividend income, cycle, value, and growth. These labels organize plans; they do not claim that the system has automatically proven business quality or a cycle bottom.
+
+Selecting a template fills in strategy-specific thesis and invalidation scaffolding, position/cash discipline, and execution steps. The index-crash template starts with CSI 300 drawdown tiers at 20% and 30%; the other templates leave symbol-specific price thresholds for the user to research and enter. Templates are editable starting points and should be revised before activation.
+
+Each plan stores the thesis, invalidation conditions, optional portfolio account, maximum position, required cash floor, review date, and ordered execution steps. P0 accepts only two deterministic metrics:
+
+Hong Kong inputs such as `700`, `00700`, `HK00700`, and `00700.HK` are stored consistently as `HK00700`; list filters apply the same normalization to one-to-five-digit numeric queries.
+Explicit `SH` / `SZ` A-share identities retain any necessary security distinction, while price and drawdown freshness still use the latest completed mainland-China session.
+`HSI` / `HSCEI` / `HSTECH` use the Hong Kong calendar, while `.US` forms such as `AAPL.US` use the US calendar. Position discipline treats `00700` / `HK00700` and `AAPL` / `AAPL.US` as the same securities.
+Provider history routing applies the same rules: Hong Kong index aliases skip public sources that may reinterpret them as US stocks and route directly to Yahoo's `^HSI` / `^HSCE` / `HSTECH.HK`; `.US` is removed before provider routing.
+The Yahoo history adapter converts the project's inclusive end date to Yahoo's next-calendar-day exclusive `end`, preventing SPX/NDX history from losing its latest completed bar.
+
+- `price`: the latest valid symbol price. Its observation date must cover the market's latest completed session. When the realtime quote is missing, zero, or has no verifiable date, its value is discarded and replaced by the latest close from a calendar-validated daily-history snapshot;
+- `benchmark_drawdown_250d_pct`: drawdown from the benchmark's high over its latest 250 daily bars; the internal loader requests a 550-calendar-day window to cover at least 250 completed sessions. Bars must reach the latest completed session, so stale provider history cannot trigger a step. A benchmark symbol is required.
+
+Operators are limited to `lte`, `gte`, and `between`; arbitrary expressions and scripts are not accepted. Active plans run as an independent daily responsibility, so they are still checked for open markets if the AI analysis, market review, or merged report notification fails. Plan evaluation itself is fail-open and cannot break reports, notifications, or backtests. Manual checks never notify. The daily flow routes only first-time, not-yet-notified triggers through the existing `alert` notification route; failed sends remain pending for retry. No order is placed automatically.
+Single-plan checks show a data-insufficient warning and its concrete reasons when conditions could not be validated. Batch checks count data-insufficient results separately from thrown failures instead of presenting an incomplete validation as a successful no-trigger result.
+
+Evaluation is computed from a plan snapshot. If another request edits the plan or any step while market/portfolio data is being loaded, the stale result is rejected atomically instead of overwriting the newer state.
+
+The lifecycle is `draft -> active -> paused/closed`. An active plan must be paused before replacing its execution steps. A triggered step can be marked completed or skipped, or reset directly to pending when it has not been executed. Completed and skipped steps are immutable execution history; close the old plan and create a new one to revise its checkpoints. Closed plans cannot be reactivated.
+
+When a plan is linked to a portfolio account, buy/add triggers also check the current symbol weight and cash ratio. If a step defines a post-execution target weight, the service also projects cash after moving from the current weight to that target. A buy/add tier is not triggered when the current weight already meets its target, while any simultaneously matched higher target remains eligible. A reached maximum position, current or projected cash below the floor, unavailable snapshot, stale FX, or any missing/stale position valuation keeps the step recorded as triggered but blocks the buy discipline for manual review. If an exit/review trigger and a blocked buy occur together, the overall plan remains triggered while its alert explicitly lists the blocked-buy reasons.
+Position-price staleness is revalidated against that security market's latest completed session. For example, the previous US close remains reliable before the next US session opens even after the natural date has advanced in China.
+
+Main APIs:
+
+| Endpoint | Method | Description |
+|------|------|------|
+| `/api/v1/investment-plans` | GET/POST | List or create plans |
+| `/api/v1/investment-plans/{id}` | GET/PUT | Read or update one plan |
+| `/api/v1/investment-plans/{id}/status` | PATCH | Activate, pause, or close a plan |
+| `/api/v1/investment-plans/{id}/steps/{step_id}` | PATCH | Complete or skip a triggered step, or reset it before execution |
+| `/api/v1/investment-plans/{id}/evaluate` | POST | Manually evaluate one active plan without notification |
+| `/api/v1/investment-plans/evaluate-active?notify=false` | POST | Evaluate all active plans; only `notify=true` attempts alert delivery |
+
+---
+
 ## Local WebUI Management Interface
 
 The WebUI and FastAPI API share the same service process. After startup, use the browser workspace for configuration management, manual analysis, task progress, historical reports, backtesting, portfolio management, and smart import. Authentication, cloud-server access, and API usage details are covered below.
@@ -1037,6 +1078,7 @@ FastAPI provides RESTful API service for configuration management and triggering
 - **Candidate Pool** - The Web "Candidates" page uses static stock-index metadata and quote rankings for rule-based scoring, letting users filter by market, industry, keyword, and candidate mode before starring, opening K-line charts, launching analysis, or asking Agent chat
 - **Historical report follow-up context** - Clicking "Ask AI" from a historical report creates a new chat session, shows an expandable report-source card inside the message stream, restores it after refresh/service restart/session switch, and keeps injecting it into later Agent follow-ups
 - **Backtest Validation** - Evaluate historical analysis accuracy, query direction win rate and simulated returns
+- **Strategy Plans** - Record thesis, invalidation conditions, position discipline, and price/benchmark-drawdown steps with manual and daily checks
 - **API Documentation** - Visit `/docs` for Swagger UI
 
 ### API Endpoints
@@ -1058,6 +1100,9 @@ FastAPI provides RESTful API service for configuration management and triggering
 | `/api/v1/backtest/results` | GET | Query backtest results (paginated) |
 | `/api/v1/backtest/performance` | GET | Get overall backtest performance |
 | `/api/v1/backtest/performance/{code}` | GET | Get per-stock backtest performance |
+| `/api/v1/investment-plans` | GET/POST | List or create investment strategy plans |
+| `/api/v1/investment-plans/{id}/evaluate` | POST | Manually evaluate one active plan |
+| `/api/v1/investment-plans/evaluate-active?notify=false` | POST | Evaluate all active plans with optional alert delivery |
 | `/api/v1/stocks/rankings?market=CN|BSE|HK|US&metric=change_pct|amount|volume&direction=desc|asc` | GET | Query stock quote rankings; `limit` is 1..100 and `industry=__uncategorized__` filters uncategorized stocks |
 | `/api/v1/stocks/{stock_code}/history?period=daily&days=30&force_refresh=false` | GET | Query daily K-line history data; the Web Stock Discovery chart drawer reuses this endpoint, supports natural-day `days` windows 30/90/180/365, and returns cache metadata such as `source/cache_hit/stale/as_of_date/message` |
 | `/api/health` | GET | Health check |

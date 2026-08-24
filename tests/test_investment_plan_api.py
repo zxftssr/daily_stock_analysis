@@ -1,0 +1,197 @@
+# -*- coding: utf-8 -*-
+"""Investment strategy plan API contract tests."""
+
+from __future__ import annotations
+
+import os
+import sys
+import tempfile
+import unittest
+from datetime import date
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from fastapi.testclient import TestClient
+
+try:
+    import litellm  # noqa: F401
+except ModuleNotFoundError:
+    sys.modules["litellm"] = MagicMock()
+
+import src.auth as auth
+from api.app import create_app
+from src.config import Config
+from src.storage import DatabaseManager
+
+
+def _reset_auth_globals() -> None:
+    auth._auth_enabled = None
+    auth._session_secret = None
+    auth._password_hash_salt = None
+    auth._password_hash_stored = None
+    auth._rate_limit = {}
+
+
+class InvestmentPlanApiTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        _reset_auth_globals()
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.data_dir = Path(self.temp_dir.name)
+        self.db_path = self.data_dir / "investment_plan_api.db"
+        self.env_path = self.data_dir / ".env"
+        self.env_path.write_text(
+            "\n".join([
+                "STOCK_LIST=600519",
+                "GEMINI_API_KEY=test",
+                "ADMIN_AUTH_ENABLED=false",
+                f"DATABASE_PATH={self.db_path}",
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        os.environ["ENV_FILE"] = str(self.env_path)
+        os.environ["DATABASE_PATH"] = str(self.db_path)
+        Config.reset_instance()
+        DatabaseManager.reset_instance()
+        self.client = TestClient(create_app(static_dir=self.data_dir / "empty-static"))
+
+    def tearDown(self) -> None:
+        DatabaseManager.reset_instance()
+        Config.reset_instance()
+        os.environ.pop("ENV_FILE", None)
+        os.environ.pop("DATABASE_PATH", None)
+        self.temp_dir.cleanup()
+
+    @staticmethod
+    def _payload():
+        return {
+            "symbol": "600519",
+            "market": "cn",
+            "name": "贵州茅台",
+            "strategy_type": "value",
+            "status": "active",
+            "thesis": "行业龙头且现金流稳定",
+            "invalidation_note": "核心盈利能力持续恶化",
+            "max_position_pct": 20,
+            "required_cash_pct": 25,
+            "steps": [{
+                "action": "buy",
+                "metric": "price",
+                "operator": "lte",
+                "threshold": 1400,
+                "target_position_pct": 5,
+            }],
+        }
+
+    def test_crud_lifecycle_and_evaluation_contract(self) -> None:
+        created = self.client.post("/api/v1/investment-plans", json=self._payload())
+        self.assertEqual(created.status_code, 200, created.text)
+        plan = created.json()
+        self.assertEqual(plan["strategy_label"], "价值投资")
+        self.assertEqual(plan["status"], "active")
+
+        listed = self.client.get("/api/v1/investment-plans", params={"status": "active"})
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()["summary"]["active"], 1)
+
+        with patch(
+            "src.services.stock_service.StockService.get_realtime_quote",
+            return_value={
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "current_price": 1350,
+                "price_date": date.today().isoformat(),
+            },
+        ):
+            evaluated = self.client.post(f"/api/v1/investment-plans/{plan['id']}/evaluate")
+        self.assertEqual(evaluated.status_code, 200, evaluated.text)
+        evaluation = evaluated.json()
+        self.assertEqual(evaluation["plan"]["last_evaluation_status"], "triggered")
+        self.assertEqual(len(evaluation["newly_triggered_step_ids"]), 1)
+
+        step_id = evaluation["plan"]["steps"][0]["id"]
+        completed = self.client.patch(
+            f"/api/v1/investment-plans/{plan['id']}/steps/{step_id}",
+            json={"status": "completed"},
+        )
+        self.assertEqual(completed.status_code, 200)
+        self.assertEqual(completed.json()["steps"][0]["status"], "completed")
+
+        paused = self.client.patch(
+            f"/api/v1/investment-plans/{plan['id']}/status",
+            json={"status": "paused"},
+        )
+        self.assertEqual(paused.status_code, 200)
+        self.assertEqual(paused.json()["status"], "paused")
+
+    def test_duplicate_and_invalid_plan_errors(self) -> None:
+        first = self.client.post("/api/v1/investment-plans", json=self._payload())
+        self.assertEqual(first.status_code, 200)
+        duplicate = self.client.post("/api/v1/investment-plans", json=self._payload())
+        self.assertEqual(duplicate.status_code, 409)
+
+        invalid = self._payload()
+        invalid["symbol"] = "bad symbol"
+        invalid["status"] = "draft"
+        response = self.client.post("/api/v1/investment-plans", json=invalid)
+        self.assertEqual(response.status_code, 400)
+
+    def test_active_drawdown_plan_requires_benchmark(self) -> None:
+        payload = self._payload()
+        payload["strategy_type"] = "index_crash"
+        payload["steps"] = [{
+            "action": "buy",
+            "metric": "benchmark_drawdown_250d_pct",
+            "operator": "gte",
+            "threshold": 20,
+        }]
+        response = self.client.post("/api/v1/investment-plans", json=payload)
+        self.assertEqual(response.status_code, 400)
+
+    def test_pending_step_cannot_be_skipped_through_api(self) -> None:
+        created = self.client.post("/api/v1/investment-plans", json=self._payload())
+        self.assertEqual(created.status_code, 200, created.text)
+        plan = created.json()
+        response = self.client.patch(
+            f"/api/v1/investment-plans/{plan['id']}/steps/{plan['steps'][0]['id']}",
+            json={"status": "skipped"},
+        )
+        self.assertEqual(response.status_code, 409)
+
+    def test_plain_numeric_hk_symbol_is_normalized_for_create_and_list(self) -> None:
+        payload = self._payload()
+        payload.update({"symbol": "700", "market": "hk", "name": "腾讯控股"})
+        created = self.client.post("/api/v1/investment-plans", json=payload)
+        self.assertEqual(created.status_code, 200, created.text)
+        self.assertEqual(created.json()["symbol"], "HK00700")
+
+        listed = self.client.get(
+            "/api/v1/investment-plans",
+            params={"symbol": "00700"},
+        )
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertEqual(listed.json()["total"], 1)
+        self.assertEqual(listed.json()["items"][0]["symbol"], "HK00700")
+
+    def test_partial_update_cannot_clear_required_benchmark(self) -> None:
+        payload = self._payload()
+        payload["strategy_type"] = "index_crash"
+        payload["benchmark_symbol"] = "000300"
+        payload["steps"] = [{
+            "action": "buy",
+            "metric": "benchmark_drawdown_250d_pct",
+            "operator": "gte",
+            "threshold": 20,
+        }]
+        created = self.client.post("/api/v1/investment-plans", json=payload)
+        self.assertEqual(created.status_code, 200, created.text)
+
+        response = self.client.put(
+            f"/api/v1/investment-plans/{created.json()['id']}",
+            json={"benchmark_symbol": None},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json().get("error"), "validation_error")
+
+
+if __name__ == "__main__":
+    unittest.main()

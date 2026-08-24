@@ -16,7 +16,7 @@ YfinanceFetcher - 兜底数据源 (Priority 4)
 
 import csv
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import StringIO
 from typing import Optional, List, Dict, Any
 from urllib.error import HTTPError, URLError
@@ -104,6 +104,16 @@ class YfinanceFetcher(BaseFetcher):
         """
         code = stock_code.strip().upper()
 
+        hk_index_mapping = {
+            "HSI": "^HSI",
+            "HSCEI": "^HSCE",
+            "HSTECH": "HSTECH.HK",
+        }
+        if code in hk_index_mapping:
+            return hk_index_mapping[code]
+        if code.endswith(".US"):
+            code = code[:-3]
+
         # 美股指数：映射到 Yahoo Finance 符号（如 SPX -> ^GSPC）
         yf_symbol, _ = get_us_index_yf_symbol(code)
         if yf_symbol:
@@ -172,14 +182,19 @@ class YfinanceFetcher(BaseFetcher):
         # 转换代码格式
         yf_code = self._convert_stock_code(stock_code)
 
-        logger.debug(f"调用 yfinance.download({yf_code}, {start_date}, {end_date})")
+        # Internal fetcher contracts treat ``end_date`` as inclusive, while
+        # yfinance.download() treats ``end`` as exclusive.
+        yf_end_date = (
+            datetime.strptime(end_date, "%Y-%m-%d").date() + timedelta(days=1)
+        ).isoformat()
+        logger.debug(f"调用 yfinance.download({yf_code}, {start_date}, {yf_end_date})")
 
         try:
             # 使用 yfinance 下载数据
             df = yf.download(
                 tickers=yf_code,
                 start=start_date,
-                end=end_date,
+                end=yf_end_date,
                 progress=False,  # 禁止进度条
                 auto_adjust=True,  # 自动调整价格（复权）
                 multi_level_index=True

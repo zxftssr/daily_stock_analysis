@@ -5,6 +5,7 @@ import {
   Compass,
   Home,
   Lightbulb,
+  ListChecks,
   LogOut,
   MessageSquareQuote,
   PanelLeftClose,
@@ -49,6 +50,7 @@ const NAV_SECTIONS: Array<{ label: string; items: NavItem[] }> = [
     items: [
       { key: 'chat', label: '问股', to: '/chat', icon: MessageSquareQuote, badge: 'completion' },
       { key: 'portfolio', label: '持仓', to: '/portfolio', icon: BriefcaseBusiness },
+      { key: 'plans', label: '策略计划', to: '/plans', icon: ListChecks },
       { key: 'backtest', label: '回测', to: '/backtest', icon: BarChart3 },
     ],
   },

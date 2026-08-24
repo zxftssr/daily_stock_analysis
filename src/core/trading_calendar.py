@@ -53,11 +53,17 @@ def get_market_for_stock(code: str) -> Optional[str]:
     code = (code or "").strip().upper()
 
     from data_provider import is_us_stock_code, is_us_index_code, is_hk_stock_code
+    from data_provider.base import normalize_stock_code
 
-    if is_us_stock_code(code) or is_us_index_code(code):
-        return "us"
+    if code in {"HSI", "HSCEI", "HSTECH"}:
+        return "hk"
+    if code.endswith(".US"):
+        code = code[:-3]
+    code = normalize_stock_code(code).upper()
     if is_hk_stock_code(code):
         return "hk"
+    if is_us_stock_code(code) or is_us_index_code(code):
+        return "us"
     # A-share: 6-digit numeric
     if code.isdigit() and len(code) == 6:
         return "cn"

@@ -50,6 +50,18 @@ class _FakeCalendar:
 
 
 class EffectiveTradingDateTestCase(unittest.TestCase):
+    def test_market_inference_handles_index_aliases_and_suffixes(self):
+        expected = {
+            "HSI": "hk",
+            "HSCEI": "hk",
+            "HSTECH": "hk",
+            "AAPL.US": "us",
+            "000001.SH": "cn",
+        }
+        for symbol, market in expected.items():
+            with self.subTest(symbol=symbol):
+                self.assertEqual(trading_calendar.get_market_for_stock(symbol), market)
+
     def test_weekend_returns_previous_session(self):
         fake_calendar = _FakeCalendar(
             sessions=[date(2026, 3, 26), date(2026, 3, 27)],

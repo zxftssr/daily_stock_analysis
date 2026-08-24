@@ -239,6 +239,29 @@ class StockHistorySnapshotTestCase(unittest.TestCase):
         self.assertFalse(result.cache_hit)
         self.assertFalse(result.stale)
 
+    def test_outdated_network_history_is_marked_stale(self) -> None:
+        from src.services.history_loader import load_history_snapshot
+
+        effective = date(2026, 3, 27)
+        stale_latest = date(2026, 3, 20)
+        db = _FakeDb()
+        manager = SimpleNamespace(
+            get_daily_data=MagicMock(return_value=(
+                _df_rows("000300", stale_latest, 260),
+                "eastmoney",
+            ))
+        )
+
+        with patch("src.storage.get_db", return_value=db), \
+             patch("src.services.history_loader._get_fetcher_manager", return_value=manager), \
+             patch("src.core.trading_calendar.get_effective_trading_date", return_value=effective):
+            result = load_history_snapshot("000300", days=550)
+
+        self.assertTrue(result.stale)
+        self.assertTrue(result.partial_cache)
+        self.assertEqual(result.as_of_date, stale_latest.isoformat())
+        self.assertIn("最近完整交易日", result.message)
+
     def test_nondefault_exchange_never_reads_or_writes_plain_numeric_cache_key(self) -> None:
         from src.services.history_loader import load_history_snapshot
 
@@ -338,28 +361,30 @@ class StockHistorySnapshotTestCase(unittest.TestCase):
         app = create_app()
         client = TestClient(app)
 
-        with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
-             patch("src.auth.is_auth_enabled", return_value=False), \
-             patch(
-                 "api.v1.endpoints.stocks.StockService.get_history_data",
-                 return_value={
-                     "stock_code": "000001.SZ",
-                     "stock_name": "平安银行",
-                     "period": "daily",
-                     "source": "db_cache",
-                     "cache_hit": True,
-                     "stale": True,
-                     "partial_cache": True,
-                     "as_of_date": "2026-03-26",
-                     "actual_records": 30,
-                     "requested_days": 60,
-                     "effective_days": 60,
-                     "message": "实时源失败，正在展示缓存数据",
-                     "data": [
-                         {"date": "2026-03-26", "open": 10, "high": 11, "low": 9, "close": 10.5}
-                     ],
-                 },
-             ) as get_history:
+        with (
+            patch("api.middlewares.auth.is_auth_enabled", return_value=False),
+            patch("src.auth.is_auth_enabled", return_value=False),
+            patch(
+                "api.v1.endpoints.stocks.StockService.get_history_data",
+                return_value={
+                    "stock_code": "000001.SZ",
+                    "stock_name": "平安银行",
+                    "period": "daily",
+                    "source": "db_cache",
+                    "cache_hit": True,
+                    "stale": True,
+                    "partial_cache": True,
+                    "as_of_date": "2026-03-26",
+                    "actual_records": 30,
+                    "requested_days": 60,
+                    "effective_days": 60,
+                    "message": "实时源失败，正在展示缓存数据",
+                    "data": [
+                        {"date": "2026-03-26", "open": 10, "high": 11, "low": 9, "close": 10.5}
+                    ],
+                },
+            ) as get_history,
+        ):
             response = client.get(
                 "/api/v1/stocks/000001.SZ/history?period=daily&days=60&force_refresh=true"
             )

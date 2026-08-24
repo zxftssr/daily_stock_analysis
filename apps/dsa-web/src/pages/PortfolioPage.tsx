@@ -1,5 +1,6 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ListChecks } from 'lucide-react';
 import { Pie, PieChart, ResponsiveContainer, Tooltip, Legend, Cell } from 'recharts';
 import { portfolioApi } from '../api/portfolio';
 import type { ParsedApiError } from '../api/error';
@@ -996,6 +997,7 @@ const PortfolioPage: React.FC = () => {
                   <tr>
                     <th className="text-left py-2 pr-2">账户</th>
                     <th className="text-left py-2 pr-2">代码</th>
+                    <th className="text-left py-2 pr-2">计划</th>
                     <th className="text-right py-2 pr-2">数量</th>
                     <th className="text-right py-2 pr-2">均价</th>
                     <th className="text-right py-2 pr-2">现价</th>
@@ -1009,6 +1011,20 @@ const PortfolioPage: React.FC = () => {
                     <tr key={`${row.accountId}-${row.symbol}-${row.market}`} className="border-b border-border last:border-0 hover:bg-muted/40">
                       <td className="py-2 pr-2 text-secondary">{row.accountName}</td>
                       <td className="py-2 pr-2 font-mono text-foreground">{row.symbol}</td>
+                      <td className="py-2 pr-2">
+                        <a
+                          href={
+                            `/plans?symbol=${encodeURIComponent(row.symbol)}`
+                            + `&market=${encodeURIComponent(row.market)}`
+                            + `&accountId=${row.accountId}`
+                          }
+                          aria-label={`为 ${row.symbol} 制定策略计划`}
+                          className="inline-flex h-7 items-center justify-center gap-1 rounded-md border border-transparent px-2 text-xs font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          <ListChecks className="h-3.5 w-3.5" />
+                          计划
+                        </a>
+                      </td>
                       <td className="py-2 pr-2 text-right">{row.quantity.toFixed(2)}</td>
                       <td className="py-2 pr-2 text-right">{row.avgCost.toFixed(4)}</td>
                       <td className="py-2 pr-2 text-right">

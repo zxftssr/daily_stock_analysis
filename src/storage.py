@@ -595,6 +595,67 @@ class PortfolioFxRate(Base):
     )
 
 
+class InvestmentPlan(Base):
+    """User-authored investment thesis and execution discipline for one symbol."""
+
+    __tablename__ = 'investment_plans'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey('portfolio_accounts.id'), nullable=True, index=True)
+    symbol = Column(String(16), nullable=False, index=True)
+    market = Column(String(8), nullable=False, index=True)  # cn/hk/us
+    name = Column(String(64))
+    strategy_type = Column(String(24), nullable=False, index=True)
+    status = Column(String(16), nullable=False, default='draft', index=True)
+    thesis = Column(Text, nullable=False)
+    invalidation_note = Column(Text, nullable=False)
+    benchmark_symbol = Column(String(16))
+    max_position_pct = Column(Float)
+    required_cash_pct = Column(Float)
+    review_date = Column(Date, index=True)
+    last_price = Column(Float)
+    last_evaluated_at = Column(DateTime, index=True)
+    last_evaluation_status = Column(String(24))
+    last_evaluation_note = Column(Text)
+    last_blocked_reasons = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index('ix_investment_plan_symbol_status', 'symbol', 'status'),
+        Index('ix_investment_plan_account_status', 'account_id', 'status'),
+    )
+
+
+class InvestmentPlanStep(Base):
+    """One deterministic price/drawdown checkpoint in an investment plan."""
+
+    __tablename__ = 'investment_plan_steps'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    plan_id = Column(Integer, ForeignKey('investment_plans.id'), nullable=False, index=True)
+    action = Column(String(16), nullable=False)  # buy/add/reduce/exit/review
+    metric = Column(String(40), nullable=False)  # price/benchmark_drawdown_250d_pct
+    operator = Column(String(16), nullable=False)  # lte/gte/between
+    threshold = Column(Float, nullable=False)
+    upper_threshold = Column(Float)
+    target_position_pct = Column(Float)
+    note = Column(String(255))
+    sort_order = Column(Integer, nullable=False, default=0)
+    status = Column(String(16), nullable=False, default='pending', index=True)
+    triggered_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    notified_at = Column(DateTime)
+    notification_claim_token = Column(String(64), index=True)
+    notification_claimed_at = Column(DateTime, index=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index('ix_investment_plan_step_plan_status', 'plan_id', 'status'),
+    )
+
+
 class ConversationMessage(Base):
     """
     Agent 对话历史记录表

@@ -351,6 +351,20 @@ describe('PortfolioPage FX refresh', () => {
     expect(aaplRowCells.at(-1)).toHaveClass('text-secondary');
   });
 
+  it('preserves an exchange-qualified position symbol in the strategy-plan link', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: false, positions: [
+      { symbol: 'SH600519', market: 'cn', currency: 'CNY', quantity: 10, avgCost: 100, totalCost: 1000, lastPrice: 120, marketValueBase: 1200, unrealizedPnlBase: 200, unrealizedPnlPct: 20, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-03-19', priceStale: false, priceAvailable: true },
+    ] }));
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    expect(await screen.findByRole('link', { name: '为 SH600519 制定策略计划' })).toHaveAttribute(
+      'href',
+      '/plans?symbol=SH600519&market=cn&accountId=1',
+    );
+  });
+
   it('prefers disabled feedback over empty-pair feedback when refresh is disabled', async () => {
     refreshFx.mockResolvedValueOnce({
       asOf: '2026-03-19',
