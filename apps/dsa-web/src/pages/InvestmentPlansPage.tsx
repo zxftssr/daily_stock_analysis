@@ -61,7 +61,7 @@ const STATUS_OPTIONS = [
   { value: 'draft', label: '草稿' },
   { value: 'active', label: '执行中' },
   { value: 'paused', label: '已暂停' },
-  { value: 'closed', label: '已关闭' },
+  { value: 'closed', label: '已移除' },
 ];
 
 const MARKET_OPTIONS = [
@@ -93,7 +93,7 @@ const STATUS_META: Record<InvestmentPlanStatus, { label: string; variant: 'defau
   draft: { label: '草稿', variant: 'default' },
   active: { label: '执行中', variant: 'success' },
   paused: { label: '已暂停', variant: 'warning' },
-  closed: { label: '已关闭', variant: 'default' },
+  closed: { label: '已移除', variant: 'default' },
 };
 
 const STEP_STATUS_META: Record<InvestmentPlanStepStatus, { label: string; tone: string; dot: string }> = {
@@ -542,8 +542,12 @@ const InvestmentPlansPage: React.FC = () => {
       await investmentPlansApi.setStatus(plan.id, status);
       setNotice({
         variant: status === 'active' ? 'success' : 'info',
-        title: status === 'active' ? '计划已激活' : status === 'paused' ? '计划已暂停' : '计划已关闭',
-        message: status === 'active' ? '后续检查会评估这份计划。' : '当前计划不会参与自动检查。',
+        title: status === 'active' ? '计划已激活' : status === 'paused' ? '计划已暂停' : '计划已移除',
+        message: status === 'active'
+          ? '后续检查会评估这份计划。'
+          : status === 'paused'
+            ? '当前计划不会参与自动检查。'
+            : '当前计划不会参与自动检查，可在“已移除”筛选中查看。',
       });
       await loadPlans();
     } catch (requestError) {
@@ -700,9 +704,9 @@ const InvestmentPlansPage: React.FC = () => {
 
       <ConfirmDialog
         isOpen={Boolean(closePlan)}
-        title="关闭策略计划"
-        message={`关闭后，${closePlan?.name || closePlan?.symbol || '这份计划'} 将停止检查且不能重新激活。`}
-        confirmText="确认关闭"
+        title="移除策略计划"
+        message={`移除后，${closePlan?.name || closePlan?.symbol || '这份计划'} 将停止检查且不能重新激活，但计划及执行历史仍会保留。`}
+        confirmText="确认移除"
         cancelText="取消"
         isDanger
         onConfirm={() => closePlan && void transitionPlan(closePlan, 'closed')}
@@ -786,14 +790,14 @@ const PlanCard: React.FC<{
               variant="ghost"
               onClick={onEdit}
               disabled={busy || plan.steps.some((step) => step.status !== 'pending')}
-              title={plan.steps.some((step) => step.status !== 'pending') ? '已有执行记录；请关闭计划后新建' : undefined}
+              title={plan.steps.some((step) => step.status !== 'pending') ? '已有执行记录；请移除计划后新建' : undefined}
             >
               <Pencil className="h-4 w-4" />编辑
             </Button>
           ) : null}
           {plan.status !== 'closed' ? (
             <Button size="sm" variant="danger-subtle" onClick={() => onStatus('closed')} disabled={busy}>
-              <X className="h-4 w-4" />关闭
+              <X className="h-4 w-4" />移除
             </Button>
           ) : null}
         </div>

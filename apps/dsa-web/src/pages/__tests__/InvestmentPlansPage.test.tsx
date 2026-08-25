@@ -246,6 +246,30 @@ describe('InvestmentPlansPage', () => {
     expect(await screen.findByText('活跃计划检查完成')).toBeInTheDocument();
   });
 
+  it('removes a plan while preserving the closed status contract', async () => {
+    vi.mocked(investmentPlansApi.list).mockResolvedValue({
+      items: [plan],
+      total: 1,
+      summary: { active: 1, triggered: 1, blocked: 0, reviewDue: 0, dataMissing: 0 },
+    });
+
+    render(
+      <MemoryRouter>
+        <InvestmentPlansPage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '移除' }));
+    expect(screen.getByRole('alertdialog', { name: '移除策略计划' })).toHaveTextContent(
+      '计划及执行历史仍会保留',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '确认移除' }));
+
+    await waitFor(() => expect(investmentPlansApi.setStatus).toHaveBeenCalledWith(1, 'closed'));
+    expect(await screen.findByText('计划已移除')).toBeInTheDocument();
+  });
+
   it('reports data-missing plans separately in batch checks', async () => {
     const missingPlan = { ...plan, lastEvaluationStatus: 'data_missing' };
     vi.mocked(investmentPlansApi.evaluateActive).mockResolvedValue({

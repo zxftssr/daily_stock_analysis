@@ -2,6 +2,7 @@
 import unittest
 import sys
 import os
+import sqlite3
 import tempfile
 import threading
 from datetime import date
@@ -15,7 +16,7 @@ from sqlalchemy.sql import func
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.config import Config
-from src.storage import DatabaseManager, StockDaily
+from src.storage import DatabaseManager, InvestmentPlan, InvestmentPlanStep, StockDaily
 
 class TestStorage(unittest.TestCase):
     
@@ -131,6 +132,104 @@ class TestStorage(unittest.TestCase):
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+            temp_dir.cleanup()
+
+    def test_existing_investment_plan_tables_are_upgraded_in_place(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        db_path = os.path.join(temp_dir.name, "legacy_investment_plans.db")
+
+        connection = sqlite3.connect(db_path)
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE investment_plans (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id INTEGER,
+                    symbol VARCHAR(16) NOT NULL,
+                    market VARCHAR(8) NOT NULL,
+                    name VARCHAR(64),
+                    strategy_type VARCHAR(24) NOT NULL,
+                    status VARCHAR(16) NOT NULL,
+                    thesis TEXT NOT NULL,
+                    invalidation_note TEXT NOT NULL,
+                    benchmark_symbol VARCHAR(16),
+                    max_position_pct FLOAT,
+                    required_cash_pct FLOAT,
+                    review_date DATE,
+                    last_price FLOAT,
+                    last_evaluated_at DATETIME,
+                    last_evaluation_status VARCHAR(24),
+                    last_evaluation_note TEXT,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                );
+                CREATE TABLE investment_plan_steps (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    plan_id INTEGER NOT NULL,
+                    action VARCHAR(16) NOT NULL,
+                    metric VARCHAR(40) NOT NULL,
+                    operator VARCHAR(16) NOT NULL,
+                    threshold FLOAT NOT NULL,
+                    upper_threshold FLOAT,
+                    target_position_pct FLOAT,
+                    note VARCHAR(255),
+                    sort_order INTEGER NOT NULL,
+                    status VARCHAR(16) NOT NULL,
+                    triggered_at DATETIME,
+                    completed_at DATETIME,
+                    notified_at DATETIME,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                );
+                INSERT INTO investment_plans (
+                    id, symbol, market, strategy_type, status, thesis, invalidation_note
+                ) VALUES (1, '600519', 'cn', 'value', 'active', 'legacy thesis', 'legacy invalidation');
+                INSERT INTO investment_plan_steps (
+                    id, plan_id, action, metric, operator, threshold, sort_order, status
+                ) VALUES (1, 1, 'buy', 'price', 'lte', 1200, 0, 'pending');
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        try:
+            DatabaseManager.reset_instance()
+            db = DatabaseManager(db_url=f"sqlite:///{db_path}")
+            with db.get_session() as session:
+                plan = session.get(InvestmentPlan, 1)
+                step = session.get(InvestmentPlanStep, 1)
+                plan_columns = {
+                    row[1] for row in session.connection().exec_driver_sql(
+                        'PRAGMA table_info("investment_plans")'
+                    )
+                }
+                step_columns = {
+                    row[1] for row in session.connection().exec_driver_sql(
+                        'PRAGMA table_info("investment_plan_steps")'
+                    )
+                }
+                step_indexes = {
+                    row[1] for row in session.connection().exec_driver_sql(
+                        'PRAGMA index_list("investment_plan_steps")'
+                    )
+                }
+
+            self.assertEqual(plan.thesis, "legacy thesis")
+            self.assertIsNone(plan.last_blocked_reasons)
+            self.assertEqual(step.threshold, 1200)
+            self.assertIsNone(step.notification_claim_token)
+            self.assertIsNone(step.notification_claimed_at)
+            self.assertIn("last_blocked_reasons", plan_columns)
+            self.assertIn("notification_claim_token", step_columns)
+            self.assertIn("notification_claimed_at", step_columns)
+            self.assertIn("ix_investment_plan_steps_notification_claim_token", step_indexes)
+            self.assertIn("ix_investment_plan_steps_notification_claimed_at", step_indexes)
+
+            DatabaseManager.reset_instance()
+            DatabaseManager(db_url=f"sqlite:///{db_path}")
+        finally:
+            DatabaseManager.reset_instance()
             temp_dir.cleanup()
 
     def test_sqlite_write_transactions_begin_immediate(self):

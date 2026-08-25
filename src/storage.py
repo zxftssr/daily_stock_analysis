@@ -771,6 +771,7 @@ class DatabaseManager:
         
         # 创建所有表
         Base.metadata.create_all(self._engine)
+        self._upgrade_sqlite_schema()
 
         self._initialized = True
         logger.info(f"数据库初始化完成: {db_url}")
@@ -827,6 +828,58 @@ class DatabaseManager:
                 logger.warning("初始化 SQLite PRAGMA 失败: %s", exc)
             finally:
                 cursor.close()
+
+    def _upgrade_sqlite_schema(self) -> None:
+        """Apply additive SQLite upgrades that ``create_all`` cannot perform."""
+        if not self._is_sqlite_engine:
+            return
+
+        column_upgrades = (
+            ("investment_plans", "last_blocked_reasons", "TEXT"),
+            ("investment_plan_steps", "notification_claim_token", "VARCHAR(64)"),
+            ("investment_plan_steps", "notification_claimed_at", "DATETIME"),
+        )
+
+        for table_name, column_name, column_type in column_upgrades:
+            try:
+                with self._engine.begin() as connection:
+                    columns = {
+                        row[1]
+                        for row in connection.exec_driver_sql(
+                            f'PRAGMA table_info("{table_name}")'
+                        )
+                    }
+                    if not columns or column_name in columns:
+                        continue
+                    connection.exec_driver_sql(
+                        f'ALTER TABLE "{table_name}" '
+                        f'ADD COLUMN "{column_name}" {column_type}'
+                    )
+                logger.info("SQLite schema upgraded: %s.%s", table_name, column_name)
+            except OperationalError:
+                # Another process may have completed the same additive upgrade
+                # after our table-info check. Only suppress that exact outcome.
+                with self._engine.connect() as connection:
+                    columns = {
+                        row[1]
+                        for row in connection.exec_driver_sql(
+                            f'PRAGMA table_info("{table_name}")'
+                        )
+                    }
+                if column_name not in columns:
+                    raise
+
+        with self._engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_investment_plan_steps_notification_claim_token "
+                "ON investment_plan_steps (notification_claim_token)"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_investment_plan_steps_notification_claimed_at "
+                "ON investment_plan_steps (notification_claimed_at)"
+            )
 
     def _is_file_sqlite_database(self) -> bool:
         database = (self._engine.url.database or "").strip()

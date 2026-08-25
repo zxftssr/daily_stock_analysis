@@ -16,6 +16,7 @@ export * from './Loading';
 export * from './Drawer';
 export * from './ScrollArea';
 export * from './ApiErrorAlert';
+export * from './AppErrorBoundary';
 export * from './Collapsible';
 export * from './ScoreGauge';
 export * from './JsonViewer';
