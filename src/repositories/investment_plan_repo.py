@@ -270,26 +270,30 @@ class InvestmentPlanRepository:
         *,
         claim_token: str,
         claimed_at: datetime,
+        plan_ids: Optional[Iterable[int]] = None,
         lease_seconds: int = 300,
     ) -> List[Dict[str, Any]]:
         """Atomically claim alert steps so concurrent workers cannot send duplicates."""
         lease_cutoff = claimed_at - timedelta(seconds=max(30, int(lease_seconds)))
+        scoped_plan_ids = {int(plan_id) for plan_id in (plan_ids or [])}
         with self.write_session() as session:
+            conditions = [
+                InvestmentPlan.status == "active",
+                InvestmentPlan.notify_on_trigger.is_(True),
+                InvestmentPlanStep.status == "triggered",
+                InvestmentPlanStep.notified_at.is_(None),
+                or_(
+                    InvestmentPlanStep.notification_claim_token.is_(None),
+                    InvestmentPlanStep.notification_claimed_at.is_(None),
+                    InvestmentPlanStep.notification_claimed_at < lease_cutoff,
+                ),
+            ]
+            if scoped_plan_ids:
+                conditions.append(InvestmentPlan.id.in_(scoped_plan_ids))
             steps = session.execute(
                 select(InvestmentPlanStep)
                 .join(InvestmentPlan, InvestmentPlan.id == InvestmentPlanStep.plan_id)
-                .where(
-                    and_(
-                        InvestmentPlan.status == "active",
-                        InvestmentPlanStep.status == "triggered",
-                        InvestmentPlanStep.notified_at.is_(None),
-                        or_(
-                            InvestmentPlanStep.notification_claim_token.is_(None),
-                            InvestmentPlanStep.notification_claimed_at.is_(None),
-                            InvestmentPlanStep.notification_claimed_at < lease_cutoff,
-                        ),
-                    )
-                )
+                .where(and_(*conditions))
                 .order_by(InvestmentPlanStep.plan_id.asc(), InvestmentPlanStep.id.asc())
             ).scalars().all()
             if not steps:
@@ -387,6 +391,9 @@ class InvestmentPlanRepository:
             "max_position_pct": row.max_position_pct,
             "required_cash_pct": row.required_cash_pct,
             "review_date": row.review_date.isoformat() if row.review_date else None,
+            "notify_on_trigger": bool(row.notify_on_trigger),
+            "notification_channels": cls._load_string_list(row.notification_channels),
+            "check_frequency": row.check_frequency or "daily",
             "last_price": row.last_price,
             "last_evaluated_at": row.last_evaluated_at.isoformat() if row.last_evaluated_at else None,
             "last_evaluation_status": row.last_evaluation_status,

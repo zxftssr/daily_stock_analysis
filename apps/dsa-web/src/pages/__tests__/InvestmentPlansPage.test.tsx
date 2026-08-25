@@ -40,6 +40,9 @@ const plan: InvestmentPlanItem = {
   maxPositionPct: 20,
   requiredCashPct: 25,
   reviewDate: '2026-12-31',
+  notifyOnTrigger: true,
+  notificationChannels: [],
+  checkFrequency: 'daily',
   reviewDue: false,
   lastPrice: 1350,
   lastEvaluatedAt: '2026-08-24T18:00:00',
@@ -84,6 +87,7 @@ describe('InvestmentPlansPage', () => {
       blockedReasons: [],
       reviewDue: false,
       errors: [],
+      notification: { attempted: false, sent: false, stepCount: 0 },
     });
     vi.mocked(investmentPlansApi.evaluateActive).mockResolvedValue({
       evaluated: 1,
@@ -159,7 +163,7 @@ describe('InvestmentPlansPage', () => {
     expect(screen.getAllByText('已触发').length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole('button', { name: '检查' }));
-    await waitFor(() => expect(investmentPlansApi.evaluate).toHaveBeenCalledWith(1));
+    await waitFor(() => expect(investmentPlansApi.evaluate).toHaveBeenCalledWith(1, true));
     expect(await screen.findByText('发现新触发条件')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '完成' }));
@@ -185,6 +189,7 @@ describe('InvestmentPlansPage', () => {
       blockedReasons: [],
       reviewDue: false,
       errors: ['最新价格不可用'],
+      notification: { attempted: false, sent: false, stepCount: 0 },
     });
 
     render(
@@ -214,6 +219,8 @@ describe('InvestmentPlansPage', () => {
     fireEvent.change(screen.getByLabelText('什么情况下认错'), { target: { value: '盈利能力持续恶化' } });
     fireEvent.change(screen.getByLabelText('价格阈值'), { target: { value: '1400' } });
     fireEvent.change(screen.getByLabelText('执行后目标仓位 %'), { target: { value: '5' } });
+    fireEvent.change(screen.getByLabelText('自动检查频率'), { target: { value: 'hourly' } });
+    fireEvent.change(screen.getByLabelText('通知渠道'), { target: { value: 'ntfy' } });
     fireEvent.click(screen.getByRole('button', { name: /保存并激活/ }));
 
     await waitFor(() => {
@@ -224,6 +231,9 @@ describe('InvestmentPlansPage', () => {
         status: 'active',
         maxPositionPct: 20,
         requiredCashPct: 25,
+        notifyOnTrigger: true,
+        notificationChannels: ['ntfy'],
+        checkFrequency: 'hourly',
         steps: [expect.objectContaining({
           action: 'buy',
           metric: 'price',
@@ -270,6 +280,36 @@ describe('InvestmentPlansPage', () => {
     expect(await screen.findByText('计划已移除')).toBeInTheDocument();
   });
 
+  it('updates notification settings on an active plan without replacing steps', async () => {
+    vi.mocked(investmentPlansApi.list).mockResolvedValue({
+      items: [plan],
+      total: 1,
+      summary: { active: 1, triggered: 1, blocked: 0, reviewDue: 0, dataMissing: 0 },
+    });
+
+    render(
+      <MemoryRouter>
+        <InvestmentPlansPage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '设置' }));
+    expect(screen.getByRole('dialog', { name: '检查与通知设置' })).toBeInTheDocument();
+    expect(screen.getByText('执行条件保持不变')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('自动检查频率'), { target: { value: 'hourly' } });
+    fireEvent.change(screen.getByLabelText('通知渠道'), { target: { value: 'ntfy' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }));
+
+    await waitFor(() => expect(investmentPlansApi.update).toHaveBeenCalledWith(1, {
+      notifyOnTrigger: true,
+      notificationChannels: ['ntfy'],
+      checkFrequency: 'hourly',
+    }));
+    expect(investmentPlansApi.setStatus).not.toHaveBeenCalled();
+    expect(await screen.findByText('检查与通知设置已保存')).toBeInTheDocument();
+  });
+
   it('reports data-missing plans separately in batch checks', async () => {
     const missingPlan = { ...plan, lastEvaluationStatus: 'data_missing' };
     vi.mocked(investmentPlansApi.evaluateActive).mockResolvedValue({
@@ -285,6 +325,7 @@ describe('InvestmentPlansPage', () => {
         blockedReasons: [],
         reviewDue: false,
         errors: ['最新价格不可用'],
+        notification: { attempted: false, sent: false, stepCount: 0 },
       }],
       notification: { attempted: false, sent: false, stepCount: 0 },
     });

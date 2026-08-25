@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import uuid
@@ -13,6 +14,7 @@ from data_provider import is_us_index_code, is_us_stock_code
 from data_provider.base import _exchange_aware_stock_identity, canonical_stock_code
 from src.data.stock_index_loader import get_index_stock_name
 from src.notification import NotificationService
+from src.notification_routing import ROUTABLE_NOTIFICATION_CHANNEL_SET
 from src.repositories.investment_plan_repo import (
     InvestmentPlanBusyError,
     InvestmentPlanConflictError,
@@ -37,6 +39,7 @@ STEP_ACTIONS = {"buy", "add", "reduce", "exit", "review"}
 STEP_METRICS = {"price", "benchmark_drawdown_250d_pct"}
 STEP_OPERATORS = {"lte", "gte", "between"}
 STEP_STATUSES = {"pending", "triggered", "completed", "skipped"}
+CHECK_FREQUENCIES = {"daily", "hourly", "manual"}
 
 STRATEGY_LABELS = {
     "index_crash": "指数大跌",
@@ -100,6 +103,9 @@ class InvestmentPlanService:
         max_position_pct: Optional[float] = None,
         required_cash_pct: Optional[float] = None,
         review_date: Optional[date] = None,
+        notify_on_trigger: bool = True,
+        notification_channels: Optional[Sequence[str]] = None,
+        check_frequency: str = "daily",
         status: str = "draft",
     ) -> Dict[str, Any]:
         normalized_market = self._normalize_market(market)
@@ -107,6 +113,10 @@ class InvestmentPlanService:
         normalized_status = self._normalize_choice(status, PLAN_STATUSES, "status")
         normalized_strategy = self._normalize_choice(strategy_type, STRATEGY_TYPES, "strategy_type")
         normalized_benchmark = self._normalize_optional_symbol(benchmark_symbol)
+        normalized_channels = self._normalize_notification_channels(notification_channels)
+        normalized_frequency = self._normalize_choice(
+            check_frequency, CHECK_FREQUENCIES, "check_frequency"
+        )
         self._validate_account(account_id)
         fields = {
             "account_id": account_id,
@@ -121,6 +131,9 @@ class InvestmentPlanService:
             "max_position_pct": self._optional_pct(max_position_pct, "max_position_pct"),
             "required_cash_pct": self._optional_pct(required_cash_pct, "required_cash_pct"),
             "review_date": review_date,
+            "notify_on_trigger": bool(notify_on_trigger),
+            "notification_channels": json.dumps(normalized_channels, ensure_ascii=False),
+            "check_frequency": normalized_frequency,
         }
         normalized_steps = self._normalize_steps(
             steps,
@@ -209,6 +222,17 @@ class InvestmentPlanService:
             )
         if "review_date" in fields:
             normalized["review_date"] = fields.get("review_date")
+        if "notify_on_trigger" in fields:
+            normalized["notify_on_trigger"] = bool(fields.get("notify_on_trigger"))
+        if "notification_channels" in fields:
+            normalized["notification_channels"] = json.dumps(
+                self._normalize_notification_channels(fields.get("notification_channels")),
+                ensure_ascii=False,
+            )
+        if "check_frequency" in fields and fields.get("check_frequency") is not None:
+            normalized["check_frequency"] = self._normalize_choice(
+                fields["check_frequency"], CHECK_FREQUENCIES, "check_frequency"
+            )
 
         effective_benchmark = normalized.get("benchmark_symbol", current.get("benchmark_symbol"))
         effective_max = normalized.get("max_position_pct", current.get("max_position_pct"))
@@ -294,7 +318,7 @@ class InvestmentPlanService:
     # ------------------------------------------------------------------
     # Evaluation and notifications
     # ------------------------------------------------------------------
-    def evaluate_plan(self, plan_id: int) -> Dict[str, Any]:
+    def evaluate_plan(self, plan_id: int, *, send_notification: bool = False) -> Dict[str, Any]:
         plan = self.get_plan(plan_id)
         if plan["status"] != "active":
             raise InvestmentPlanStateError("Only active investment plans can be evaluated")
@@ -396,7 +420,7 @@ class InvestmentPlanService:
         if applied is None:
             raise InvestmentPlanStateError("Investment plan changed while it was being evaluated")
         updated_plan, newly_triggered_ids = applied
-        return {
+        result = {
             "plan": self._decorate_plan(updated_plan),
             "metric_values": metric_values,
             "matched_step_ids": [int(step["id"]) for step in matched_steps],
@@ -405,13 +429,18 @@ class InvestmentPlanService:
             "blocked_reasons": blocked_reasons,
             "review_due": review_due,
             "errors": errors,
+            "notification": {"attempted": False, "sent": False, "step_count": 0},
         }
+        if send_notification:
+            result["notification"] = self.send_pending_notifications(plan_ids=[plan_id])
+        return result
 
     def evaluate_active_plans(
         self,
         *,
         send_notification: bool = False,
         markets: Optional[Iterable[str]] = None,
+        check_frequencies: Optional[Iterable[str]] = None,
     ) -> Dict[str, Any]:
         self._quote_cache.clear()
         self._validated_price_cache.clear()
@@ -420,6 +449,12 @@ class InvestmentPlanService:
         if markets is not None:
             allowed_markets = {str(market).strip().lower() for market in markets}
             plans = [plan for plan in plans if plan.get("market") in allowed_markets]
+        if check_frequencies is not None:
+            allowed_frequencies = {
+                self._normalize_choice(value, CHECK_FREQUENCIES, "check_frequency")
+                for value in check_frequencies
+            }
+            plans = [plan for plan in plans if plan.get("check_frequency") in allowed_frequencies]
         results: List[Dict[str, Any]] = []
         errors: List[Dict[str, Any]] = []
         for plan in plans:
@@ -430,8 +465,9 @@ class InvestmentPlanService:
                 errors.append({"plan_id": int(plan["id"]), "message": str(exc)})
 
         notification = {"attempted": False, "sent": False, "step_count": 0}
-        if send_notification:
-            notification = self.send_pending_notifications()
+        evaluated_plan_ids = [int(item["plan"]["id"]) for item in results]
+        if send_notification and evaluated_plan_ids:
+            notification = self.send_pending_notifications(plan_ids=evaluated_plan_ids)
         return {
             "evaluated": len(results),
             "triggered": sum(len(item["newly_triggered_step_ids"]) for item in results),
@@ -440,34 +476,70 @@ class InvestmentPlanService:
             "notification": notification,
         }
 
-    def send_pending_notifications(self) -> Dict[str, Any]:
+    def send_pending_notifications(
+        self,
+        *,
+        plan_ids: Optional[Iterable[int]] = None,
+    ) -> Dict[str, Any]:
         claim_token = uuid.uuid4().hex
         claimed_at = datetime.now()
         pending = self.repo.claim_unnotified_triggered(
             claim_token=claim_token,
             claimed_at=claimed_at,
+            plan_ids=plan_ids,
         )
         step_ids = [int(step["id"]) for plan in pending for step in plan["steps"]]
         if not step_ids:
             return {"attempted": False, "sent": False, "step_count": 0}
 
         notifier = self.notifier or NotificationService()
-        attempted = False
-        sent = False
-        try:
-            if not notifier.is_available():
-                return {"attempted": False, "sent": False, "step_count": len(step_ids)}
-            attempted = True
-            content = self._build_alert_content(pending)
-            sent = bool(notifier.send(content, route_type="alert"))
-            return {"attempted": attempted, "sent": sent, "step_count": len(step_ids)}
-        finally:
+        if not notifier.is_available():
             self.repo.complete_notification_claim(
                 step_ids,
                 claim_token=claim_token,
                 completed_at=datetime.now(),
-                sent=sent,
+                sent=False,
             )
+            return {"attempted": False, "sent": False, "step_count": len(step_ids)}
+
+        grouped: Dict[tuple[str, ...], List[Dict[str, Any]]] = {}
+        for plan in pending:
+            key = tuple(plan.get("notification_channels") or [])
+            grouped.setdefault(key, []).append(plan)
+
+        attempted = False
+        sent = False
+        for channel_values, plans in grouped.items():
+            group_step_ids = [
+                int(step["id"])
+                for plan in plans
+                for step in plan["steps"]
+            ]
+            group_sent = False
+            try:
+                attempted = True
+                content = self._build_alert_content(plans)
+                group_sent = bool(notifier.send(
+                    content,
+                    route_type="alert",
+                    channel_values=list(channel_values) if channel_values else None,
+                ))
+                sent = sent or group_sent
+            except Exception as exc:
+                logger.warning(
+                    "投资策略计划通知发送失败 channels=%s: %s",
+                    list(channel_values) or ["alert-route"],
+                    exc,
+                    exc_info=True,
+                )
+            finally:
+                self.repo.complete_notification_claim(
+                    group_step_ids,
+                    claim_token=claim_token,
+                    completed_at=datetime.now(),
+                    sent=group_sent,
+                )
+        return {"attempted": attempted, "sent": sent, "step_count": len(step_ids)}
 
     # ------------------------------------------------------------------
     # Evaluation helpers
@@ -872,6 +944,19 @@ class InvestmentPlanService:
         if normalized.isdigit():
             return _exchange_aware_stock_identity(text)
         return normalized.removesuffix(".US").upper()
+
+    @staticmethod
+    def _normalize_notification_channels(values: Optional[Sequence[str]]) -> List[str]:
+        if values and len(values) > 1:
+            raise ValueError("notification_channels accepts at most one channel")
+        normalized: List[str] = []
+        for value in values or []:
+            channel = str(value or "").strip().lower()
+            if channel not in ROUTABLE_NOTIFICATION_CHANNEL_SET:
+                raise ValueError(f"Unsupported notification channel: {channel or value}")
+            if channel not in normalized:
+                normalized.append(channel)
+        return normalized
 
     @staticmethod
     def _normalize_choice(value: Any, allowed: Iterable[str], field: str) -> str:

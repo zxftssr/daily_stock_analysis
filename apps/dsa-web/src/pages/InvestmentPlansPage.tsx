@@ -26,6 +26,7 @@ import {
   AppPage,
   Badge,
   Button,
+  Checkbox,
   ConfirmDialog,
   Drawer,
   EmptyState,
@@ -36,7 +37,9 @@ import {
 import type { PortfolioAccountItem } from '../types/portfolio';
 import type {
   InvestmentPlanCreateRequest,
+  InvestmentPlanCheckFrequency,
   InvestmentPlanItem,
+  InvestmentPlanNotificationChannel,
   InvestmentPlanStatus,
   InvestmentPlanStepAction,
   InvestmentPlanStepInput,
@@ -89,6 +92,29 @@ const OPERATOR_OPTIONS = [
   { value: 'between', label: '进入区间' },
 ];
 
+const CHECK_FREQUENCY_OPTIONS: Array<{ value: InvestmentPlanCheckFrequency; label: string }> = [
+  { value: 'daily', label: '每日定时任务' },
+  { value: 'hourly', label: '每小时（schedule 模式）' },
+  { value: 'manual', label: '仅手工检查' },
+];
+
+const NOTIFICATION_CHANNEL_OPTIONS: Array<{ value: '' | InvestmentPlanNotificationChannel; label: string }> = [
+  { value: '', label: '使用全局告警渠道' },
+  { value: 'wechat', label: '企业微信' },
+  { value: 'feishu', label: '飞书' },
+  { value: 'telegram', label: 'Telegram' },
+  { value: 'email', label: '邮件' },
+  { value: 'pushover', label: 'Pushover' },
+  { value: 'ntfy', label: 'ntfy' },
+  { value: 'gotify', label: 'Gotify' },
+  { value: 'pushplus', label: 'PushPlus' },
+  { value: 'serverchan3', label: 'Server酱3' },
+  { value: 'custom', label: '自定义 Webhook' },
+  { value: 'discord', label: 'Discord' },
+  { value: 'slack', label: 'Slack' },
+  { value: 'astrbot', label: 'AstrBot' },
+];
+
 const STATUS_META: Record<InvestmentPlanStatus, { label: string; variant: 'default' | 'success' | 'warning' | 'info' }> = {
   draft: { label: '草稿', variant: 'default' },
   active: { label: '执行中', variant: 'success' },
@@ -135,6 +161,9 @@ type PlanForm = {
   maxPositionPct: string;
   requiredCashPct: string;
   reviewDate: string;
+  notifyOnTrigger: boolean;
+  notificationChannel: '' | InvestmentPlanNotificationChannel;
+  checkFrequency: InvestmentPlanCheckFrequency;
   steps: FormStep[];
 };
 
@@ -222,6 +251,9 @@ const emptyForm = (): PlanForm => ({
   name: '',
   accountId: '',
   reviewDate: '',
+  notifyOnTrigger: true,
+  notificationChannel: '',
+  checkFrequency: 'daily',
   ...strategyTemplate('value'),
 });
 
@@ -253,6 +285,10 @@ const conditionText = (step: InvestmentPlanStepInput) => {
 
 const actionLabel = (action: InvestmentPlanStepAction) => (
   ACTION_OPTIONS.find((option) => option.value === action)?.label ?? action
+);
+
+const isSettingsOnlyPlan = (plan: InvestmentPlanItem) => (
+  plan.status === 'active' || plan.steps.some((step) => step.status !== 'pending')
 );
 
 const parsePrefillMarket = (raw: string | null): PlanForm['market'] => {
@@ -366,6 +402,9 @@ const InvestmentPlansPage: React.FC = () => {
       maxPositionPct: plan.maxPositionPct == null ? '' : String(plan.maxPositionPct),
       requiredCashPct: plan.requiredCashPct == null ? '' : String(plan.requiredCashPct),
       reviewDate: plan.reviewDate || '',
+      notifyOnTrigger: plan.notifyOnTrigger,
+      notificationChannel: plan.notificationChannels[0] || '',
+      checkFrequency: plan.checkFrequency,
       steps: plan.steps.map((step) => ({
         key: String(step.id),
         action: step.action,
@@ -414,6 +453,7 @@ const InvestmentPlansPage: React.FC = () => {
 
   const savePlan = async (activate: boolean) => {
     setFormError(null);
+    const settingsOnly = Boolean(editingPlan && isSettingsOnlyPlan(editingPlan));
     const maxPositionPct = toOptionalNumber(form.maxPositionPct);
     const requiredCashPct = toOptionalNumber(form.requiredCashPct);
     if (!form.symbol.trim() || !form.thesis.trim() || !form.invalidationNote.trim()) {
@@ -439,7 +479,13 @@ const InvestmentPlansPage: React.FC = () => {
     setSaving(true);
     try {
       if (editingPlan) {
-        await investmentPlansApi.update(editingPlan.id, {
+        const notificationSettings = {
+          notifyOnTrigger: form.notifyOnTrigger,
+          notificationChannels: form.notificationChannel ? [form.notificationChannel] : [],
+          checkFrequency: form.checkFrequency,
+        };
+        await investmentPlansApi.update(editingPlan.id, settingsOnly ? notificationSettings : {
+          ...notificationSettings,
           name: form.name.trim(),
           strategyType: form.strategyType,
           thesis: form.thesis.trim(),
@@ -450,7 +496,7 @@ const InvestmentPlansPage: React.FC = () => {
           reviewDate: form.reviewDate || null,
           steps,
         });
-        if (activate && editingPlan.status !== 'active') {
+        if (!settingsOnly && activate && editingPlan.status !== 'active') {
           await investmentPlansApi.setStatus(editingPlan.id, 'active');
         }
       } else {
@@ -467,6 +513,9 @@ const InvestmentPlansPage: React.FC = () => {
           maxPositionPct,
           requiredCashPct,
           reviewDate: form.reviewDate || null,
+          notifyOnTrigger: form.notifyOnTrigger,
+          notificationChannels: form.notificationChannel ? [form.notificationChannel] : [],
+          checkFrequency: form.checkFrequency,
           steps,
         };
         await investmentPlansApi.create(payload);
@@ -474,8 +523,12 @@ const InvestmentPlansPage: React.FC = () => {
       setDrawerOpen(false);
       setNotice({
         variant: 'success',
-        title: activate ? '计划已进入执行' : '计划已保存',
-        message: activate ? '系统将在每日任务或手工检查时评估待执行条件。' : '草稿不会参与自动检查。',
+        title: settingsOnly ? '检查与通知设置已保存' : activate ? '计划已进入执行' : '计划已保存',
+        message: settingsOnly
+          ? '新的检查频率与通知方式已生效。'
+          : activate
+          ? `系统将按“${CHECK_FREQUENCY_OPTIONS.find((item) => item.value === form.checkFrequency)?.label}”检查待执行条件。`
+          : '草稿不会参与自动检查。',
       });
       await loadPlans();
     } catch (requestError) {
@@ -489,7 +542,7 @@ const InvestmentPlansPage: React.FC = () => {
     setEvaluatingId(plan.id);
     setNotice(null);
     try {
-      const response = await investmentPlansApi.evaluate(plan.id);
+      const response = await investmentPlansApi.evaluate(plan.id, plan.notifyOnTrigger);
       if (response.errors.length > 0 || response.plan.lastEvaluationStatus === 'data_missing') {
         setNotice({
           variant: 'warning',
@@ -503,7 +556,7 @@ const InvestmentPlansPage: React.FC = () => {
           variant: response.newlyTriggeredStepIds.length > 0 ? 'warning' : 'info',
           title: response.newlyTriggeredStepIds.length > 0 ? '发现新触发条件' : '检查完成',
           message: response.newlyTriggeredStepIds.length > 0
-            ? `新触发 ${response.newlyTriggeredStepIds.length} 档，请核对行情和约束后人工处理。`
+            ? `新触发 ${response.newlyTriggeredStepIds.length} 档${response.notification.sent ? '，通知已发送' : ''}，请核对行情和约束后人工处理。`
             : '当前没有新的待执行步骤。',
         });
       }
@@ -687,6 +740,7 @@ const InvestmentPlansPage: React.FC = () => {
       <PlanEditorDrawer
         open={drawerOpen}
         editingPlan={editingPlan}
+        settingsOnly={Boolean(editingPlan && isSettingsOnlyPlan(editingPlan))}
         form={form}
         accounts={accountOptions}
         error={formError}
@@ -747,6 +801,11 @@ const PlanCard: React.FC<{
   onStepStatus: (stepId: number, status: InvestmentPlanStepStatus) => void;
 }> = ({ plan, accountName, busy, onEvaluate, onEdit, onStatus, onStepStatus }) => {
   const statusMeta = STATUS_META[plan.status];
+  const frequencyLabel = CHECK_FREQUENCY_OPTIONS.find((item) => item.value === plan.checkFrequency)?.label || plan.checkFrequency;
+  const selectedChannel = plan.notificationChannels[0] || '';
+  const notificationLabel = plan.notifyOnTrigger
+    ? NOTIFICATION_CHANNEL_OPTIONS.find((item) => item.value === selectedChannel)?.label || selectedChannel
+    : '关闭';
   return (
     <article className={cn(
       'rounded-lg border bg-card shadow-sm',
@@ -768,6 +827,10 @@ const PlanCard: React.FC<{
             <span>现金底线 <strong className="text-foreground">{plan.requiredCashPct == null ? '--' : `${formatNumber(plan.requiredCashPct)}%`}</strong></span>
             <span>账户 <strong className="text-foreground">{accountName || '未绑定'}</strong></span>
           </div>
+          <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
+            <span>自动检查 <strong className="text-foreground">{frequencyLabel}</strong></span>
+            <span>触发通知 <strong className="text-foreground">{notificationLabel}</strong></span>
+          </div>
         </div>
         <div className="flex flex-wrap gap-2">
           {plan.status === 'active' ? (
@@ -784,15 +847,14 @@ const PlanCard: React.FC<{
               <Play className="h-4 w-4" />激活
             </Button>
           ) : null}
-          {plan.status !== 'active' && plan.status !== 'closed' ? (
+          {plan.status !== 'closed' ? (
             <Button
               size="sm"
               variant="ghost"
               onClick={onEdit}
-              disabled={busy || plan.steps.some((step) => step.status !== 'pending')}
-              title={plan.steps.some((step) => step.status !== 'pending') ? '已有执行记录；请移除计划后新建' : undefined}
+              disabled={busy}
             >
-              <Pencil className="h-4 w-4" />编辑
+              <Pencil className="h-4 w-4" />{isSettingsOnlyPlan(plan) ? '设置' : '编辑'}
             </Button>
           ) : null}
           {plan.status !== 'closed' ? (
@@ -880,6 +942,7 @@ const PlanCard: React.FC<{
 const PlanEditorDrawer: React.FC<{
   open: boolean;
   editingPlan: InvestmentPlanItem | null;
+  settingsOnly: boolean;
   form: PlanForm;
   accounts: Array<{ value: string; label: string }>;
   error: string | null;
@@ -893,6 +956,7 @@ const PlanEditorDrawer: React.FC<{
 }> = ({
   open,
   editingPlan,
+  settingsOnly,
   form,
   accounts,
   error,
@@ -904,9 +968,17 @@ const PlanEditorDrawer: React.FC<{
   onRemoveStep,
   onSave,
 }) => (
-  <Drawer isOpen={open} onClose={onClose} title={editingPlan ? '编辑策略计划' : '制定策略计划'} width="max-w-4xl">
+  <Drawer isOpen={open} onClose={onClose} title={settingsOnly ? '检查与通知设置' : editingPlan ? '编辑策略计划' : '制定策略计划'} width="max-w-4xl">
     <div className="space-y-6">
-      <section>
+      {settingsOnly ? (
+        <InlineAlert
+          variant="info"
+          title="执行条件保持不变"
+          message="这份计划正在执行或已有执行历史，本次只修改检查频率和通知方式。"
+        />
+      ) : null}
+
+      <section className={settingsOnly ? 'hidden' : undefined}>
         <div className="mb-3 flex items-center gap-2">
           <span className="font-mono text-xs text-muted-foreground">01</span>
           <h3 className="text-sm font-semibold text-foreground">标的与投资逻辑</h3>
@@ -933,7 +1005,7 @@ const PlanEditorDrawer: React.FC<{
         </div>
       </section>
 
-      <section className="border-t border-border pt-6">
+      <section className={cn('border-t border-border pt-6', settingsOnly && 'hidden')}>
         <div className="mb-3 flex items-center gap-2">
           <span className="font-mono text-xs text-muted-foreground">02</span>
           <h3 className="text-sm font-semibold text-foreground">账户纪律</h3>
@@ -946,9 +1018,40 @@ const PlanEditorDrawer: React.FC<{
       </section>
 
       <section className="border-t border-border pt-6">
+        <div className="mb-3 flex items-center gap-2">
+          <span className="font-mono text-xs text-muted-foreground">03</span>
+          <h3 className="text-sm font-semibold text-foreground">检查与通知</h3>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Select
+            label="自动检查频率"
+            value={form.checkFrequency}
+            onChange={(value) => onFormChange({ checkFrequency: value as InvestmentPlanCheckFrequency })}
+            options={CHECK_FREQUENCY_OPTIONS}
+          />
+          <div>
+            <Select
+              label="通知渠道"
+              value={form.notificationChannel}
+              onChange={(value) => onFormChange({ notificationChannel: value as PlanForm['notificationChannel'] })}
+              options={NOTIFICATION_CHANNEL_OPTIONS}
+              disabled={!form.notifyOnTrigger}
+            />
+            <p className="mt-1 text-xs text-muted-foreground">指定渠道前，请先在设置页完成对应渠道配置。</p>
+          </div>
+        </div>
+        <Checkbox
+          containerClassName="mt-4"
+          label="达到条件时发送通知"
+          checked={form.notifyOnTrigger}
+          onChange={(event) => onFormChange({ notifyOnTrigger: event.target.checked })}
+        />
+      </section>
+
+      <section className={cn('border-t border-border pt-6', settingsOnly && 'hidden')}>
         <div className="mb-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <span className="font-mono text-xs text-muted-foreground">03</span>
+            <span className="font-mono text-xs text-muted-foreground">04</span>
             <h3 className="text-sm font-semibold text-foreground">执行档位</h3>
           </div>
           <Button size="sm" variant="outline" onClick={onAddStep}><Plus className="h-4 w-4" />增加一档</Button>
@@ -984,10 +1087,16 @@ const PlanEditorDrawer: React.FC<{
 
       <div className="sticky bottom-0 flex flex-wrap justify-end gap-2 border-t border-border bg-card py-4">
         <Button variant="ghost" onClick={onClose} disabled={saving}>取消</Button>
-        <Button variant="outline" onClick={() => onSave(false)} isLoading={saving} loadingText="保存中">保存草稿</Button>
-        <Button onClick={() => onSave(true)} isLoading={saving} loadingText="激活中">
-          <Play className="h-4 w-4" />保存并激活
-        </Button>
+        {settingsOnly ? (
+          <Button onClick={() => onSave(false)} isLoading={saving} loadingText="保存中">保存设置</Button>
+        ) : (
+          <>
+            <Button variant="outline" onClick={() => onSave(false)} isLoading={saving} loadingText="保存中">保存草稿</Button>
+            <Button onClick={() => onSave(true)} isLoading={saving} loadingText="激活中">
+              <Play className="h-4 w-4" />保存并激活
+            </Button>
+          </>
+        )}
       </div>
     </div>
   </Drawer>

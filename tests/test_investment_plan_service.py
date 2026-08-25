@@ -71,8 +71,8 @@ class _NotifierStub:
     def is_available(self):
         return True
 
-    def send(self, content, route_type=None):
-        self.messages.append((content, route_type))
+    def send(self, content, route_type=None, channel_values=None):
+        self.messages.append((content, route_type, channel_values))
         return self.send_result
 
 
@@ -82,8 +82,8 @@ class _BlockingNotifier(_NotifierStub):
         self.started = threading.Event()
         self.release = threading.Event()
 
-    def send(self, content, route_type=None):
-        self.messages.append((content, route_type))
+    def send(self, content, route_type=None, channel_values=None):
+        self.messages.append((content, route_type, channel_values))
         self.started.set()
         self.release.wait(timeout=5)
         return True
@@ -169,6 +169,53 @@ class InvestmentPlanServiceTestCase(unittest.TestCase):
         duplicate = service.send_pending_notifications()
         self.assertFalse(duplicate["attempted"])
         self.assertEqual(len(notifier.messages), 1)
+
+    def test_manual_check_sends_to_selected_channel_when_enabled(self) -> None:
+        notifier = _NotifierStub()
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=95),
+            portfolio_service=self.portfolio,
+            notifier=notifier,
+        )
+        plan = self._create_active(
+            service,
+            notification_channels=["ntfy"],
+            check_frequency="manual",
+        )
+
+        result = service.evaluate_plan(plan["id"], send_notification=True)
+
+        self.assertTrue(result["notification"]["sent"])
+        self.assertEqual(notifier.messages[0][2], ["ntfy"])
+        self.assertEqual(result["plan"]["check_frequency"], "manual")
+
+    def test_notification_disabled_plan_keeps_trigger_unnotified(self) -> None:
+        notifier = _NotifierStub()
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=95),
+            portfolio_service=self.portfolio,
+            notifier=notifier,
+        )
+        plan = self._create_active(service, notify_on_trigger=False)
+        service.evaluate_plan(plan["id"])
+
+        result = service.send_pending_notifications()
+
+        self.assertFalse(result["attempted"])
+        self.assertEqual(notifier.messages, [])
+        self.assertIsNone(service.get_plan(plan["id"])["steps"][0]["notified_at"])
+
+    def test_plan_rejects_more_than_one_notification_channel(self) -> None:
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=95),
+            portfolio_service=self.portfolio,
+        )
+
+        with self.assertRaisesRegex(ValueError, "at most one"):
+            self._create_active(
+                service,
+                notification_channels=["wechat", "custom"],
+            )
 
     def test_failed_notification_remains_pending_for_retry(self) -> None:
         notifier = _NotifierStub(send_result=False)
@@ -1003,6 +1050,53 @@ class InvestmentPlanServiceTestCase(unittest.TestCase):
         self.assertEqual(result["evaluated"], 1)
         self.assertEqual(result["results"][0]["plan"]["id"], hk_plan["id"])
         self.assertIsNone(service.get_plan(cn_plan["id"])["last_evaluated_at"])
+
+    def test_batch_evaluation_filters_by_check_frequency(self) -> None:
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=95),
+            portfolio_service=self.portfolio,
+        )
+        hourly_plan = self._create_active(service, check_frequency="hourly")
+        service.set_plan_status(hourly_plan["id"], "closed")
+        daily_plan = self._create_active(service, check_frequency="daily")
+
+        result = service.evaluate_active_plans(check_frequencies={"daily"})
+
+        self.assertEqual(result["evaluated"], 1)
+        self.assertEqual(result["results"][0]["plan"]["id"], daily_plan["id"])
+
+    def test_frequency_batch_notifies_only_plans_evaluated_in_that_batch(self) -> None:
+        notifier = _NotifierStub()
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=95),
+            portfolio_service=self.portfolio,
+            notifier=notifier,
+        )
+        daily_plan = self._create_active(service, check_frequency="daily")
+        hourly_plan = service.create_plan(
+            symbol="HK00700",
+            market="hk",
+            strategy_type="value",
+            status="active",
+            thesis="现金流稳定",
+            invalidation_note="核心业务持续恶化",
+            check_frequency="hourly",
+            steps=[self._step()],
+        )
+        service.evaluate_plan(daily_plan["id"])
+        service.evaluate_plan(hourly_plan["id"])
+
+        result = service.evaluate_active_plans(
+            check_frequencies={"daily"},
+            send_notification=True,
+        )
+
+        self.assertTrue(result["notification"]["sent"])
+        self.assertEqual(result["notification"]["step_count"], 1)
+        self.assertIn("600519", notifier.messages[0][0])
+        self.assertNotIn("HK00700", notifier.messages[0][0])
+        self.assertIsNotNone(service.get_plan(daily_plan["id"])["steps"][0]["notified_at"])
+        self.assertIsNone(service.get_plan(hourly_plan["id"])["steps"][0]["notified_at"])
 
     def test_review_due_is_exposed_without_forcing_trigger(self) -> None:
         service = InvestmentPlanService(

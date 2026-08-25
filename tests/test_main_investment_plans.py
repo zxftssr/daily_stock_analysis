@@ -32,7 +32,11 @@ def test_daily_plan_bridge_reuses_notifier_and_notification_flag() -> None:
         )
 
     service_cls.assert_called_once_with(notifier=notifier)
-    service.evaluate_active_plans.assert_called_once_with(send_notification=True, markets=None)
+    service.evaluate_active_plans.assert_called_once_with(
+        send_notification=True,
+        markets=None,
+        check_frequencies=None,
+    )
     assert result["triggered"] == 1
 
 
@@ -56,6 +60,7 @@ def test_daily_run_still_checks_open_plan_markets_when_watchlist_markets_are_clo
         notifier=None,
         send_notification=True,
         markets={"us"},
+        check_frequencies={"daily"},
     )
 
 
@@ -89,6 +94,7 @@ def test_daily_run_checks_plans_even_when_stock_pipeline_fails() -> None:
         notifier=notifier,
         send_notification=True,
         markets={"cn"},
+        check_frequencies={"daily"},
     )
 
 
@@ -109,4 +115,5 @@ def test_import_failure_still_checks_plans_before_propagating() -> None:
         notifier=None,
         send_notification=True,
         markets={"us"},
+        check_frequencies={"daily"},
     )

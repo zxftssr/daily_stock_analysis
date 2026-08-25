@@ -613,6 +613,9 @@ class InvestmentPlan(Base):
     max_position_pct = Column(Float)
     required_cash_pct = Column(Float)
     review_date = Column(Date, index=True)
+    notify_on_trigger = Column(Boolean, nullable=False, default=True)
+    notification_channels = Column(Text)
+    check_frequency = Column(String(16), nullable=False, default='daily', index=True)
     last_price = Column(Float)
     last_evaluated_at = Column(DateTime, index=True)
     last_evaluation_status = Column(String(24))
@@ -836,6 +839,9 @@ class DatabaseManager:
 
         column_upgrades = (
             ("investment_plans", "last_blocked_reasons", "TEXT"),
+            ("investment_plans", "notify_on_trigger", "BOOLEAN NOT NULL DEFAULT 1"),
+            ("investment_plans", "notification_channels", "TEXT"),
+            ("investment_plans", "check_frequency", "VARCHAR(16) NOT NULL DEFAULT 'daily'"),
             ("investment_plan_steps", "notification_claim_token", "VARCHAR(64)"),
             ("investment_plan_steps", "notification_claimed_at", "DATETIME"),
         )
@@ -870,6 +876,11 @@ class DatabaseManager:
                     raise
 
         with self._engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_investment_plans_check_frequency "
+                "ON investment_plans (check_frequency)"
+            )
             connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS "
                 "ix_investment_plan_steps_notification_claim_token "

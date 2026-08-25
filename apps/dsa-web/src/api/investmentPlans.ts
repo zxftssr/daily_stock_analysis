@@ -43,6 +43,9 @@ const serializePlan = (payload: InvestmentPlanCreateRequest | InvestmentPlanUpda
   ...('maxPositionPct' in payload ? { max_position_pct: payload.maxPositionPct ?? null } : {}),
   ...('requiredCashPct' in payload ? { required_cash_pct: payload.requiredCashPct ?? null } : {}),
   ...('reviewDate' in payload ? { review_date: payload.reviewDate || null } : {}),
+  ...('notifyOnTrigger' in payload ? { notify_on_trigger: payload.notifyOnTrigger } : {}),
+  ...('notificationChannels' in payload ? { notification_channels: payload.notificationChannels || [] } : {}),
+  ...('checkFrequency' in payload ? { check_frequency: payload.checkFrequency } : {}),
   ...('steps' in payload && payload.steps ? { steps: payload.steps.map(serializeStep) } : {}),
 });
 
@@ -100,9 +103,11 @@ export const investmentPlansApi = {
     return toCamelCase<InvestmentPlanItem>(response.data);
   },
 
-  async evaluate(planId: number): Promise<InvestmentPlanEvaluationResponse> {
+  async evaluate(planId: number, notify = false): Promise<InvestmentPlanEvaluationResponse> {
     const response = await apiClient.post<Record<string, unknown>>(
       `/api/v1/investment-plans/${planId}/evaluate`,
+      undefined,
+      { params: { notify } },
     );
     return toCamelCase<InvestmentPlanEvaluationResponse>(response.data);
   },

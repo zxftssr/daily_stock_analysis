@@ -4,6 +4,10 @@ export type InvestmentPlanStepAction = 'buy' | 'add' | 'reduce' | 'exit' | 'revi
 export type InvestmentPlanStepMetric = 'price' | 'benchmark_drawdown_250d_pct';
 export type InvestmentPlanStepOperator = 'lte' | 'gte' | 'between';
 export type InvestmentPlanStepStatus = 'pending' | 'triggered' | 'completed' | 'skipped';
+export type InvestmentPlanCheckFrequency = 'daily' | 'hourly' | 'manual';
+export type InvestmentPlanNotificationChannel =
+  | 'wechat' | 'feishu' | 'telegram' | 'email' | 'pushover' | 'ntfy' | 'gotify'
+  | 'pushplus' | 'serverchan3' | 'custom' | 'discord' | 'slack' | 'astrbot';
 
 export interface InvestmentPlanStepInput {
   action: InvestmentPlanStepAction;
@@ -42,6 +46,9 @@ export interface InvestmentPlanItem {
   maxPositionPct?: number | null;
   requiredCashPct?: number | null;
   reviewDate?: string | null;
+  notifyOnTrigger: boolean;
+  notificationChannels: InvestmentPlanNotificationChannel[];
+  checkFrequency: InvestmentPlanCheckFrequency;
   reviewDue: boolean;
   lastPrice?: number | null;
   lastEvaluatedAt?: string | null;
@@ -67,6 +74,9 @@ export interface InvestmentPlanCreateRequest {
   maxPositionPct?: number | null;
   requiredCashPct?: number | null;
   reviewDate?: string | null;
+  notifyOnTrigger?: boolean;
+  notificationChannels?: InvestmentPlanNotificationChannel[];
+  checkFrequency?: InvestmentPlanCheckFrequency;
   steps: InvestmentPlanStepInput[];
 }
 
@@ -96,6 +106,11 @@ export interface InvestmentPlanEvaluationResponse {
   blockedReasons: string[];
   reviewDue: boolean;
   errors: string[];
+  notification: {
+    attempted?: boolean;
+    sent?: boolean;
+    stepCount?: number;
+  };
 }
 
 export interface InvestmentPlanBatchEvaluationResponse {

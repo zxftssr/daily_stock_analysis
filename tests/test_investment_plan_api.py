@@ -73,6 +73,9 @@ class InvestmentPlanApiTestCase(unittest.TestCase):
             "invalidation_note": "核心盈利能力持续恶化",
             "max_position_pct": 20,
             "required_cash_pct": 25,
+            "notify_on_trigger": True,
+            "notification_channels": ["ntfy"],
+            "check_frequency": "hourly",
             "steps": [{
                 "action": "buy",
                 "metric": "price",
@@ -88,6 +91,9 @@ class InvestmentPlanApiTestCase(unittest.TestCase):
         plan = created.json()
         self.assertEqual(plan["strategy_label"], "价值投资")
         self.assertEqual(plan["status"], "active")
+        self.assertTrue(plan["notify_on_trigger"])
+        self.assertEqual(plan["notification_channels"], ["ntfy"])
+        self.assertEqual(plan["check_frequency"], "hourly")
 
         listed = self.client.get("/api/v1/investment-plans", params={"status": "active"})
         self.assertEqual(listed.status_code, 200)
@@ -107,6 +113,7 @@ class InvestmentPlanApiTestCase(unittest.TestCase):
         evaluation = evaluated.json()
         self.assertEqual(evaluation["plan"]["last_evaluation_status"], "triggered")
         self.assertEqual(len(evaluation["newly_triggered_step_ids"]), 1)
+        self.assertFalse(evaluation["notification"]["attempted"])
 
         step_id = evaluation["plan"]["steps"][0]["id"]
         completed = self.client.patch(
@@ -134,6 +141,12 @@ class InvestmentPlanApiTestCase(unittest.TestCase):
         invalid["status"] = "draft"
         response = self.client.post("/api/v1/investment-plans", json=invalid)
         self.assertEqual(response.status_code, 400)
+
+        too_many_channels = self._payload()
+        too_many_channels["symbol"] = "000001"
+        too_many_channels["notification_channels"] = ["wechat", "custom"]
+        response = self.client.post("/api/v1/investment-plans", json=too_many_channels)
+        self.assertEqual(response.status_code, 422)
 
     def test_active_drawdown_plan_requires_benchmark(self) -> None:
         payload = self._payload()

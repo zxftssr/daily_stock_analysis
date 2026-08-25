@@ -128,6 +128,7 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         cfg = _make_config(
             wechat_webhook_url="https://wechat.example/hook",
             custom_webhook_urls=["https://example.com/webhook"],
+            notification_alert_channels=["wechat"],
         )
         mock_get_config.return_value = cfg
 
@@ -176,6 +177,26 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
             ok = service.send("content", route_type="report")
 
         self.assertTrue(ok)
+        mock_wechat.assert_not_called()
+        mock_custom.assert_called_once_with("content")
+
+    @mock.patch("src.notification.get_config")
+    def test_send_channel_values_targets_only_selected_static_channel(self, mock_get_config: mock.MagicMock):
+        cfg = _make_config(
+            wechat_webhook_url="https://wechat.example/hook",
+            custom_webhook_urls=["https://example.com/webhook"],
+        )
+        mock_get_config.return_value = cfg
+
+        service = NotificationService()
+
+        with mock.patch.object(service, "send_to_context", return_value=True) as mock_context, \
+             mock.patch.object(service, "send_to_wechat", return_value=True) as mock_wechat, \
+             mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
+            ok = service.send("content", route_type="alert", channel_values=["custom"])
+
+        self.assertTrue(ok)
+        mock_context.assert_not_called()
         mock_wechat.assert_not_called()
         mock_custom.assert_called_once_with("content")
 

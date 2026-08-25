@@ -1685,6 +1685,7 @@ class NotificationService(
         severity: Optional[str] = None,
         dedup_key: Optional[str] = None,
         cooldown_key: Optional[str] = None,
+        channel_values: Optional[List[str]] = None,
     ) -> bool:
         """
         统一发送接口 - 向所有已配置的渠道发送
@@ -1705,11 +1706,12 @@ class NotificationService(
             severity: 通知严重级别；未设置时按路由类型推断
             dedup_key: 可选稳定去重 key；未设置时使用内容 hash
             cooldown_key: 可选冷却 key；未设置时使用路由/级别默认 key
+            channel_values: 可选静态渠道白名单；None 使用路由默认渠道，指定后不发送上下文渠道
 
         Returns:
             是否至少有一个渠道发送成功
         """
-        context_success = self.send_to_context(content)
+        context_success = self.send_to_context(content) if channel_values is None else False
 
         if not self._available_channels:
             if context_success:
@@ -1718,7 +1720,17 @@ class NotificationService(
             logger.warning("通知服务不可用，跳过推送")
             return False
 
-        target_channels = self.get_channels_for_route(route_type)
+        if channel_values is None:
+            target_channels = self.get_channels_for_route(route_type)
+        else:
+            valid_channels, invalid_channels = split_notification_route_channels(channel_values)
+            if invalid_channels:
+                logger.warning("指定通知渠道包含未知值，将忽略: %s", ", ".join(invalid_channels))
+            allowed_channels = set(valid_channels)
+            target_channels = [
+                channel for channel in self._available_channels
+                if channel.value in allowed_channels
+            ]
         if not target_channels:
             if context_success:
                 logger.info("已通过消息上下文渠道完成推送（路由后无其他通知渠道）")

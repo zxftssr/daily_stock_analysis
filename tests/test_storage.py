@@ -214,17 +214,29 @@ class TestStorage(unittest.TestCase):
                         'PRAGMA index_list("investment_plan_steps")'
                     )
                 }
+                plan_indexes = {
+                    row[1] for row in session.connection().exec_driver_sql(
+                        'PRAGMA index_list("investment_plans")'
+                    )
+                }
 
             self.assertEqual(plan.thesis, "legacy thesis")
             self.assertIsNone(plan.last_blocked_reasons)
+            self.assertTrue(plan.notify_on_trigger)
+            self.assertIsNone(plan.notification_channels)
+            self.assertEqual(plan.check_frequency, "daily")
             self.assertEqual(step.threshold, 1200)
             self.assertIsNone(step.notification_claim_token)
             self.assertIsNone(step.notification_claimed_at)
             self.assertIn("last_blocked_reasons", plan_columns)
+            self.assertIn("notify_on_trigger", plan_columns)
+            self.assertIn("notification_channels", plan_columns)
+            self.assertIn("check_frequency", plan_columns)
             self.assertIn("notification_claim_token", step_columns)
             self.assertIn("notification_claimed_at", step_columns)
             self.assertIn("ix_investment_plan_steps_notification_claim_token", step_indexes)
             self.assertIn("ix_investment_plan_steps_notification_claimed_at", step_indexes)
+            self.assertIn("ix_investment_plans_check_frequency", plan_indexes)
 
             DatabaseManager.reset_instance()
             DatabaseManager(db_url=f"sqlite:///{db_path}")

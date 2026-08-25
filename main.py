@@ -223,6 +223,7 @@ def _evaluate_investment_plans(
     notifier: Any,
     send_notification: bool,
     markets: Optional[set[str]] = None,
+    check_frequencies: Optional[set[str]] = None,
 ) -> Dict[str, Any]:
     """Evaluate active user plans without making the daily analysis fail."""
     from src.services.investment_plan_service import InvestmentPlanService
@@ -231,6 +232,7 @@ def _evaluate_investment_plans(
     return service.evaluate_active_plans(
         send_notification=send_notification,
         markets=markets,
+        check_frequencies=check_frequencies,
     )
 
 
@@ -681,6 +683,7 @@ def run_full_analysis(
                     notifier=getattr(pipeline, "notifier", None),
                     send_notification=not args.no_notify,
                     markets=_get_plan_evaluation_markets(config, args),
+                    check_frequencies={"daily"},
                 )
                 logger.info(
                     "策略计划检查完成: evaluated=%s triggered=%s errors=%s notification_sent=%s",
@@ -985,6 +988,29 @@ def main() -> int:
                 run_full_analysis(runtime_config, args, scheduled_stock_codes)
 
             background_tasks = []
+
+            def hourly_investment_plan_task():
+                runtime_config = _reload_runtime_config()
+                stats = _evaluate_investment_plans(
+                    notifier=None,
+                    send_notification=not args.no_notify,
+                    markets=_get_plan_evaluation_markets(runtime_config, args),
+                    check_frequencies={"hourly"},
+                )
+                logger.info(
+                    "每小时策略计划检查完成: evaluated=%s triggered=%s errors=%s notification_sent=%s",
+                    stats.get("evaluated", 0),
+                    stats.get("triggered", 0),
+                    len(stats.get("errors") or []),
+                    (stats.get("notification") or {}).get("sent", False),
+                )
+
+            background_tasks.append({
+                "task": hourly_investment_plan_task,
+                "interval_seconds": 60 * 60,
+                "run_immediately": True,
+                "name": "hourly_investment_plans",
+            })
             if getattr(config, 'agent_event_monitor_enabled', False):
                 from src.agent.events import build_event_monitor_from_config, run_event_monitor_once
 

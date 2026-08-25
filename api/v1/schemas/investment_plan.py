@@ -14,6 +14,11 @@ StepAction = Literal["buy", "add", "reduce", "exit", "review"]
 StepMetric = Literal["price", "benchmark_drawdown_250d_pct"]
 StepOperator = Literal["lte", "gte", "between"]
 StepStatus = Literal["pending", "triggered", "completed", "skipped"]
+CheckFrequency = Literal["daily", "hourly", "manual"]
+NotificationChannel = Literal[
+    "wechat", "feishu", "telegram", "email", "pushover", "ntfy", "gotify",
+    "pushplus", "serverchan3", "custom", "discord", "slack", "astrbot",
+]
 
 
 class InvestmentPlanStepInput(BaseModel):
@@ -39,6 +44,9 @@ class InvestmentPlanCreateRequest(BaseModel):
     max_position_pct: Optional[float] = Field(None, ge=0, le=100)
     required_cash_pct: Optional[float] = Field(None, ge=0, le=100)
     review_date: Optional[date] = None
+    notify_on_trigger: bool = True
+    notification_channels: List[NotificationChannel] = Field(default_factory=list, max_length=1)
+    check_frequency: CheckFrequency = "daily"
     steps: List[InvestmentPlanStepInput] = Field(default_factory=list)
 
 
@@ -51,6 +59,9 @@ class InvestmentPlanUpdateRequest(BaseModel):
     max_position_pct: Optional[float] = Field(None, ge=0, le=100)
     required_cash_pct: Optional[float] = Field(None, ge=0, le=100)
     review_date: Optional[date] = None
+    notify_on_trigger: Optional[bool] = None
+    notification_channels: Optional[List[NotificationChannel]] = Field(None, max_length=1)
+    check_frequency: Optional[CheckFrequency] = None
     steps: Optional[List[InvestmentPlanStepInput]] = None
 
 
@@ -96,6 +107,9 @@ class InvestmentPlanItem(BaseModel):
     max_position_pct: Optional[float] = None
     required_cash_pct: Optional[float] = None
     review_date: Optional[str] = None
+    notify_on_trigger: bool = True
+    notification_channels: List[NotificationChannel] = Field(default_factory=list)
+    check_frequency: CheckFrequency = "daily"
     review_due: bool = False
     last_price: Optional[float] = None
     last_evaluated_at: Optional[str] = None
@@ -128,6 +142,7 @@ class InvestmentPlanEvaluationResponse(BaseModel):
     blocked_reasons: List[str] = Field(default_factory=list)
     review_due: bool
     errors: List[str] = Field(default_factory=list)
+    notification: Dict[str, object] = Field(default_factory=dict)
 
 
 class InvestmentPlanBatchEvaluationResponse(BaseModel):

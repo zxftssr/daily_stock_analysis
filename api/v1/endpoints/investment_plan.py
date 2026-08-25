@@ -177,8 +177,13 @@ def set_step_status(
     responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Evaluate one active investment strategy plan",
 )
-def evaluate_plan(plan_id: int) -> InvestmentPlanEvaluationResponse:
+def evaluate_plan(
+    plan_id: int,
+    notify: bool = Query(False, description="Send a notification when this check newly triggers a step"),
+) -> InvestmentPlanEvaluationResponse:
     try:
-        return InvestmentPlanEvaluationResponse(**InvestmentPlanService().evaluate_plan(plan_id))
+        return InvestmentPlanEvaluationResponse(
+            **InvestmentPlanService().evaluate_plan(plan_id, send_notification=notify)
+        )
     except Exception as exc:
         _raise_for_plan_error(exc, "Evaluate investment plan")
