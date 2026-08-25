@@ -24,7 +24,7 @@ function resolveWindowBackgroundColor() {
 
 const isWindows = process.platform === 'win32';
 const appRootDev = path.resolve(__dirname, '..', '..');
-const GITHUB_OWNER = 'Xf-Zhou';
+const GITHUB_OWNER = 'zxftssr';
 const GITHUB_REPO = 'daily_stock_analysis';
 const RELEASES_PAGE_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases`;
 const LATEST_RELEASE_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;

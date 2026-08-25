@@ -216,7 +216,7 @@ jobs:
           BODY=$(awk "/^## \[${VERSION}\]/{found=1; next} found && /^## \[/{exit} found{print}" docs/CHANGELOG.md)
           if [[ -z "$BODY" ]]; then
             echo "Warning: no CHANGELOG entry found for ${VERSION}"
-            BODY="See [CHANGELOG](https://github.com/Xf-Zhou/daily_stock_analysis/blob/main/docs/CHANGELOG.md) for details."
+            BODY="See [CHANGELOG](https://github.com/zxftssr/daily_stock_analysis/blob/main/docs/CHANGELOG.md) for details."
           fi
           # Write changelog content + install instructions to file
           echo "$BODY" > /tmp/release_body.md

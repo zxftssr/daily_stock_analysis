@@ -366,14 +366,14 @@ The image uses prebuilt frontend assets under `/app/static` at runtime, so the r
 
 Image registries:
 
-- GHCR: `ghcr.io/xf-zhou/daily_stock_analysis:<tag>`
+- GHCR: `ghcr.io/zxftssr/daily_stock_analysis:<tag>`
 - Docker Hub: `<DOCKERHUB_USERNAME>/daily_stock_analysis:<tag>` (optional, driven by the publisher's `DOCKERHUB_USERNAME` secret)
 
 ### Quick Start
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/Xf-Zhou/daily_stock_analysis.git
+git clone https://github.com/zxftssr/daily_stock_analysis.git
 cd daily_stock_analysis
 
 # 2. Configure environment variables
@@ -398,7 +398,7 @@ If you do not want to keep the source tree on the target machine, you can run th
 
 ```bash
 # Web/API mode
-docker pull ghcr.io/xf-zhou/daily_stock_analysis:latest
+docker pull ghcr.io/zxftssr/daily_stock_analysis:latest
 docker run -d \
   --name dsa-server \
   --env-file .env \
@@ -407,7 +407,7 @@ docker run -d \
   -v "$(pwd)/logs:/app/logs" \
   -v "$(pwd)/reports:/app/reports" \
   -v "$(pwd)/.env:/app/.env" \
-  ghcr.io/xf-zhou/daily_stock_analysis:latest \
+  ghcr.io/zxftssr/daily_stock_analysis:latest \
   python main.py --serve-only --host 0.0.0.0 --port 8000
 
 # Scheduled-task mode
@@ -418,7 +418,7 @@ docker run -d \
   -v "$(pwd)/logs:/app/logs" \
   -v "$(pwd)/reports:/app/reports" \
   -v "$(pwd)/.env:/app/.env" \
-  ghcr.io/xf-zhou/daily_stock_analysis:latest
+  ghcr.io/zxftssr/daily_stock_analysis:latest
 ```
 
 For pinned deployments or easier rollback, replace `latest` with a concrete version tag such as `v3.13.0`.
@@ -1251,4 +1251,4 @@ AGENT_EVENT_ALERT_RULES_JSON=[{"stock_code":"600519","alert_type":"price_cross",
 
 ---
 
-For more questions, please [submit an Issue](https://github.com/Xf-Zhou/daily_stock_analysis/issues)
+For more questions, please [submit an Issue](https://github.com/zxftssr/daily_stock_analysis/issues)

@@ -89,11 +89,11 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "docs": [
             {
                 "label": "完整指南：环境变量完整列表",
-                "href": "https://github.com/Xf-Zhou/daily_stock_analysis/blob/main/docs/full-guide.md#环境变量完整列表",
+                "href": "https://github.com/zxftssr/daily_stock_analysis/blob/main/docs/full-guide.md#环境变量完整列表",
             },
             {
                 "label": "Tushare 股票列表指南",
-                "href": "https://github.com/Xf-Zhou/daily_stock_analysis/blob/main/docs/TUSHARE_STOCK_LIST_GUIDE.md",
+                "href": "https://github.com/zxftssr/daily_stock_analysis/blob/main/docs/TUSHARE_STOCK_LIST_GUIDE.md",
             },
         ],
         "warning_codes": [],
@@ -123,11 +123,11 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "docs": [
             {
                 "label": "LLM 配置指南",
-                "href": "https://github.com/Xf-Zhou/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
+                "href": "https://github.com/zxftssr/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
             },
             {
                 "label": "完整指南：AI 模型配置",
-                "href": "https://github.com/Xf-Zhou/daily_stock_analysis/blob/main/docs/full-guide.md#ai-模型配置",
+                "href": "https://github.com/zxftssr/daily_stock_analysis/blob/main/docs/full-guide.md#ai-模型配置",
             },
         ],
         "warning_codes": ["provider_prefix_required"],
@@ -200,11 +200,11 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "docs": [
             {
                 "label": "LLM 配置指南：渠道模式",
-                "href": "https://github.com/Xf-Zhou/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md#方式二渠道channels模式配置适合进阶多模型",
+                "href": "https://github.com/zxftssr/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md#方式二渠道channels模式配置适合进阶多模型",
             },
             {
                 "label": "LLM 服务商配置速查",
-                "href": "https://github.com/Xf-Zhou/daily_stock_analysis/blob/main/docs/llm-providers.md",
+                "href": "https://github.com/zxftssr/daily_stock_analysis/blob/main/docs/llm-providers.md",
             },
         ],
         "warning_codes": ["channels_override_legacy_keys"],
@@ -983,11 +983,11 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "docs": [
             {
                 "label": "完整指南：飞书通知配置",
-                "href": "https://github.com/Xf-Zhou/daily_stock_analysis/blob/main/docs/full-guide.md#飞书",
+                "href": "https://github.com/zxftssr/daily_stock_analysis/blob/main/docs/full-guide.md#飞书",
             },
             {
                 "label": "飞书机器人配置专题",
-                "href": "https://github.com/Xf-Zhou/daily_stock_analysis/blob/main/docs/bot/feishu-bot-config.md",
+                "href": "https://github.com/zxftssr/daily_stock_analysis/blob/main/docs/bot/feishu-bot-config.md",
             },
         ],
         "warning_codes": ["feishu_webhook_not_app_secret"],
@@ -1718,11 +1718,11 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "docs": [
             {
                 "label": "云服务器访问 WebUI",
-                "href": "https://github.com/Xf-Zhou/daily_stock_analysis/blob/main/docs/deploy-webui-cloud.md",
+                "href": "https://github.com/zxftssr/daily_stock_analysis/blob/main/docs/deploy-webui-cloud.md",
             },
             {
                 "label": "完整指南：WebUI 与 API",
-                "href": "https://github.com/Xf-Zhou/daily_stock_analysis/blob/main/docs/full-guide.md#webui-与-api-服务",
+                "href": "https://github.com/zxftssr/daily_stock_analysis/blob/main/docs/full-guide.md#webui-与-api-服务",
             },
         ],
         "warning_codes": ["public_bind_requires_auth", "restart_required"],

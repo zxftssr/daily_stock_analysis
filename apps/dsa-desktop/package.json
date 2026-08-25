@@ -41,7 +41,7 @@
       "publish": [
         {
           "provider": "github",
-          "owner": "Xf-Zhou",
+          "owner": "zxftssr",
           "repo": "daily_stock_analysis"
         }
       ]

@@ -2,12 +2,12 @@
 
 # AI Stock Analysis System
 
-[![GitHub stars](https://img.shields.io/github/stars/Xf-Zhou/daily_stock_analysis?style=social)](https://github.com/Xf-Zhou/daily_stock_analysis/stargazers)
-[![CI](https://github.com/Xf-Zhou/daily_stock_analysis/actions/workflows/ci.yml/badge.svg)](https://github.com/Xf-Zhou/daily_stock_analysis/actions/workflows/ci.yml)
+[![GitHub stars](https://img.shields.io/github/stars/zxftssr/daily_stock_analysis?style=social)](https://github.com/zxftssr/daily_stock_analysis/stargazers)
+[![CI](https://github.com/zxftssr/daily_stock_analysis/actions/workflows/ci.yml/badge.svg)](https://github.com/zxftssr/daily_stock_analysis/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-Ready-2088FF?logo=github-actions&logoColor=white)](https://github.com/features/actions)
-[![Docker](https://img.shields.io/badge/GHCR-Ready-2496ED?logo=github&logoColor=white)](https://github.com/Xf-Zhou/daily_stock_analysis/pkgs/container/daily_stock_analysis)
+[![Docker](https://img.shields.io/badge/GHCR-Ready-2496ED?logo=github&logoColor=white)](https://github.com/zxftssr/daily_stock_analysis/pkgs/container/daily_stock_analysis)
 
 **AI-powered stock analysis system for A-shares / Hong Kong / US stocks**
 
@@ -138,7 +138,7 @@ By default, the workflow runs every weekday at 18:00 Beijing time and skips non-
 
 ```bash
 # Clone the project
-git clone https://github.com/Xf-Zhou/daily_stock_analysis.git && cd daily_stock_analysis
+git clone https://github.com/zxftssr/daily_stock_analysis.git && cd daily_stock_analysis
 
 # Install dependencies
 pip install -r requirements.txt
@@ -254,7 +254,7 @@ After configuring any available AI API key, the Web `/chat` page can use strateg
   </tr>
   <tr>
     <td width="92" valign="top"><strong>Feedback</strong></td>
-    <td valign="top"><a href="https://github.com/Xf-Zhou/daily_stock_analysis/issues">GitHub Issues</a> · <a href="https://github.com/Xf-Zhou/daily_stock_analysis/discussions">Discussions</a></td>
+    <td valign="top"><a href="https://github.com/zxftssr/daily_stock_analysis/issues">GitHub Issues</a> · <a href="https://github.com/zxftssr/daily_stock_analysis/discussions">Discussions</a></td>
   </tr>
 </table>
 

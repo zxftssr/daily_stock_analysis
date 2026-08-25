@@ -400,14 +400,14 @@ Dockerfile 使用多阶段构建，前端会在构建镜像时自动打包并内
 
 当前镜像发布地址：
 
-- GHCR：`ghcr.io/xf-zhou/daily_stock_analysis:<tag>`
+- GHCR：`ghcr.io/zxftssr/daily_stock_analysis:<tag>`
 - Docker Hub：`<DOCKERHUB_USERNAME>/daily_stock_analysis:<tag>`（可选，由发布者的 `DOCKERHUB_USERNAME` secret 决定）
 
 ### 快速启动
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/Xf-Zhou/daily_stock_analysis.git
+git clone https://github.com/zxftssr/daily_stock_analysis.git
 cd daily_stock_analysis
 
 # 2. 配置环境变量
@@ -432,7 +432,7 @@ docker-compose -f ./docker/docker-compose.yml logs -f server
 
 ```bash
 # Web/API 模式
-docker pull ghcr.io/xf-zhou/daily_stock_analysis:latest
+docker pull ghcr.io/zxftssr/daily_stock_analysis:latest
 docker run -d \
   --name dsa-server \
   --env-file .env \
@@ -441,7 +441,7 @@ docker run -d \
   -v "$(pwd)/logs:/app/logs" \
   -v "$(pwd)/reports:/app/reports" \
   -v "$(pwd)/.env:/app/.env" \
-  ghcr.io/xf-zhou/daily_stock_analysis:latest \
+  ghcr.io/zxftssr/daily_stock_analysis:latest \
   python main.py --serve-only --host 0.0.0.0 --port 8000
 
 # 定时任务模式
@@ -452,7 +452,7 @@ docker run -d \
   -v "$(pwd)/logs:/app/logs" \
   -v "$(pwd)/reports:/app/reports" \
   -v "$(pwd)/.env:/app/.env" \
-  ghcr.io/xf-zhou/daily_stock_analysis:latest
+  ghcr.io/zxftssr/daily_stock_analysis:latest
 ```
 
 如需固定版本或便于回滚，请将 `latest` 替换为具体版本 tag，例如 `v3.13.0`。
@@ -1354,7 +1354,7 @@ A: 检查是否启用了 Actions，以及 cron 表达式是否正确（注意是
 
 ---
 
-更多问题请 [提交 Issue](https://github.com/Xf-Zhou/daily_stock_analysis/issues)
+更多问题请 [提交 Issue](https://github.com/zxftssr/daily_stock_analysis/issues)
 
 ## Agent 工具数据缓存与持久化
 

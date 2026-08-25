@@ -125,7 +125,7 @@ ls -1 dist/*.yml dist/*.blockmap 2>/dev/null || true
 
 ```bash
 RELEASE_TAG="v$(node -p \"require('./package.json').version\")"
-REPO="Xf-Zhou/daily_stock_analysis"
+REPO="zxftssr/daily_stock_analysis"
 
 for f in dist/*latest.yml dist/*.blockmap dist/*Setup*.exe; do
   [ -f \"$f\" ] && echo \"[FOUND] $f\"
