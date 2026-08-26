@@ -38,6 +38,8 @@ export type StockRankingItem = {
   return20dPct?: number | null;
   return60dPct?: number | null;
   return250dPct?: number | null;
+  historyAsOfDate?: string | null;
+  historyStale?: boolean | null;
 };
 
 export type StockRankingsResponse = {
@@ -45,7 +47,33 @@ export type StockRankingsResponse = {
   source?: string | null;
   updatedAt?: string | null;
   message?: string | null;
+  historyAsOfDate?: string | null;
+  historyCoverage?: number | null;
+  historyTotal?: number | null;
+  historyStale?: boolean | null;
   items: StockRankingItem[];
+};
+
+export type EtfHistoryWarmupItem = {
+  code: string;
+  name: string;
+  status: 'ok' | 'stale' | 'unavailable' | 'error' | 'timeout';
+  source?: string | null;
+  asOfDate?: string | null;
+  actualRecords?: number | null;
+  drawdown250dPct?: number | null;
+  message?: string | null;
+};
+
+export type EtfHistoryWarmupResponse = {
+  status: 'ok' | 'partial' | 'unavailable';
+  startedAt: string;
+  completedAt: string;
+  total: number;
+  succeeded: number;
+  stale: number;
+  failed: number;
+  items: EtfHistoryWarmupItem[];
 };
 
 export type StockRankingsParams = {
@@ -150,6 +178,18 @@ export const stocksApi = {
       }
     );
     return toCamelCase<StockRankingsResponse>(response.data);
+  },
+
+  async warmEtfHistory(forceRefresh = true): Promise<EtfHistoryWarmupResponse> {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/stocks/etf-history/warmup',
+      undefined,
+      {
+        params: { force_refresh: forceRefresh },
+        timeout: 130000,
+      },
+    );
+    return toCamelCase<EtfHistoryWarmupResponse>(response.data);
   },
 
   async getHistory(stockCode: string, params: StockHistoryParams = {}): Promise<StockHistoryResponse> {

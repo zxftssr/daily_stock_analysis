@@ -97,6 +97,8 @@ class StockRankingItem(BaseModel):
     return_20d_pct: Optional[float] = Field(None, description="近 20 个交易日收益率 (%)")
     return_60d_pct: Optional[float] = Field(None, description="近 60 个交易日收益率 (%)")
     return_250d_pct: Optional[float] = Field(None, description="近 250 个交易日收益率 (%)")
+    history_as_of_date: Optional[str] = Field(None, description="ETF 历史指标截至交易日")
+    history_stale: Optional[bool] = Field(None, description="ETF 历史指标是否来自旧缓存或覆盖不足")
 
 
 class StockRankingsResponse(BaseModel):
@@ -106,7 +108,37 @@ class StockRankingsResponse(BaseModel):
     source: Optional[str] = Field(None, description="整体实际成功返回行情的数据源")
     updated_at: Optional[str] = Field(None, description="整体更新时间")
     message: Optional[str] = Field(None, description="状态说明，通常用于行情源不可用等空结果原因")
+    history_as_of_date: Optional[str] = Field(None, description="ETF 历史指标共同覆盖的最早截至日期")
+    history_coverage: Optional[int] = Field(None, description="具备当前历史指标的 ETF 数量")
+    history_total: Optional[int] = Field(None, description="当前 ETF 历史指标候选总数")
+    history_stale: Optional[bool] = Field(None, description="当前 ETF 历史指标是否存在过期或缺失")
     items: List[StockRankingItem] = Field(default_factory=list, description="榜单条目")
+
+
+class EtfHistoryWarmupItem(BaseModel):
+    """Single ETF warmup outcome."""
+
+    code: str
+    name: str
+    status: Literal["ok", "stale", "unavailable", "error", "timeout"]
+    source: Optional[str] = None
+    as_of_date: Optional[str] = None
+    actual_records: Optional[int] = None
+    drawdown_250d_pct: Optional[float] = None
+    message: Optional[str] = None
+
+
+class EtfHistoryWarmupResponse(BaseModel):
+    """Curated ETF pool history warmup summary."""
+
+    status: Literal["ok", "partial", "unavailable"]
+    started_at: str
+    completed_at: str
+    total: int
+    succeeded: int
+    stale: int
+    failed: int
+    items: List[EtfHistoryWarmupItem] = Field(default_factory=list)
 
 
 class ExtractItem(BaseModel):

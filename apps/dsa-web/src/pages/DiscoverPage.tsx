@@ -7,6 +7,7 @@ import {
   LineChart,
   MessageSquareQuote,
   Play,
+  RefreshCw,
   Search,
   Star,
   Target,
@@ -65,6 +66,9 @@ const ETF_RANKING_TABS: typeof STOCK_RANKING_TABS = [
   { key: 'amount', label: '成交额', metric: 'amount', direction: 'desc', icon: BarChart3 },
   { key: 'volume', label: '成交量', metric: 'volume', direction: 'desc', icon: LineChart },
 ];
+const ETF_HISTORY_METRICS = new Set<RankingMetric>([
+  'drawdown_250d_pct', 'return_20d_pct', 'return_60d_pct', 'return_250d_pct',
+]);
 
 const ETF_CATEGORY_LABELS: Record<string, string> = {
   broad_market: '全市场核心',
@@ -139,7 +143,13 @@ const DiscoverPage: React.FC = () => {
   const [rankingStatus, setRankingStatus] = useState<RankingStatus>('unsupported');
   const [rankingUpdatedAt, setRankingUpdatedAt] = useState<string | null>(null);
   const [rankingMessage, setRankingMessage] = useState<string | null>(null);
+  const [historyAsOfDate, setHistoryAsOfDate] = useState<string | null>(null);
+  const [historyCoverage, setHistoryCoverage] = useState<number | null>(null);
+  const [historyTotal, setHistoryTotal] = useState<number | null>(null);
+  const [historyStale, setHistoryStale] = useState(false);
   const [rankingLoading, setRankingLoading] = useState(false);
+  const [rankingRefreshNonce, setRankingRefreshNonce] = useState(0);
+  const [warmingEtfHistory, setWarmingEtfHistory] = useState(false);
   const [rankingError, setRankingError] = useState<string | null>(null);
   const [analyzingCode, setAnalyzingCode] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<ActionNotice>(null);
@@ -257,12 +267,20 @@ const DiscoverPage: React.FC = () => {
         setRankingStatus(payload.status);
         setRankingUpdatedAt(payload.updatedAt ?? null);
         setRankingMessage(payload.message ?? null);
+        setHistoryAsOfDate(payload.historyAsOfDate ?? null);
+        setHistoryCoverage(payload.historyCoverage ?? null);
+        setHistoryTotal(payload.historyTotal ?? null);
+        setHistoryStale(Boolean(payload.historyStale));
       })
       .catch((requestError: unknown) => {
         if (cancelled) return;
         setRankings([]);
         setRankingStatus('unsupported');
         setRankingMessage(null);
+        setHistoryAsOfDate(null);
+        setHistoryCoverage(null);
+        setHistoryTotal(null);
+        setHistoryStale(false);
         setRankingError(getErrorMessage(requestError, '榜单暂时不可用'));
       })
       .finally(() => {
@@ -272,7 +290,7 @@ const DiscoverPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [activeRanking.direction, activeRanking.metric, assetType, industry, market]);
+  }, [activeRanking.direction, activeRanking.metric, assetType, industry, market, rankingRefreshNonce]);
 
   const handleAssetTypeChange = useCallback((next: DiscoverAssetType) => {
     setAssetType(next);
@@ -324,6 +342,29 @@ const DiscoverPage: React.FC = () => {
 
   const handleOpenKLine = useCallback((stockCode: string, stockName: string) => {
     setKLineStock({ code: stockCode, name: stockName });
+  }, []);
+
+  const handleWarmEtfHistory = useCallback(async () => {
+    setWarmingEtfHistory(true);
+    setActionNotice(null);
+    try {
+      const result = await stocksApi.warmEtfHistory(true);
+      const complete = result.status === 'ok';
+      setActionNotice({
+        variant: complete ? 'success' : 'warning',
+        title: complete ? 'ETF 历史行情已预热' : 'ETF 历史行情部分可用',
+        message: `成功 ${result.succeeded}/${result.total}，旧缓存 ${result.stale}，失败 ${result.failed}`,
+      });
+      setRankingRefreshNonce((value) => value + 1);
+    } catch (requestError) {
+      setActionNotice({
+        variant: 'danger',
+        title: 'ETF 历史行情预热失败',
+        message: getErrorMessage(requestError, '暂时无法刷新 ETF 日线'),
+      });
+    } finally {
+      setWarmingEtfHistory(false);
+    }
   }, []);
 
   const handleCreatePlan = useCallback((item: Pick<StockRankingItem, 'code' | 'name' | 'benchmarkCode'>) => {
@@ -491,9 +532,28 @@ const DiscoverPage: React.FC = () => {
             ))}
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            {assetType === 'etf' ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => void handleWarmEtfHistory()}
+                isLoading={warmingEtfHistory}
+                loadingText="预热中"
+                aria-label="立即预热 ETF 历史行情"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                立即预热
+              </Button>
+            ) : null}
             <Badge variant={statusMeta.variant}>{statusMeta.label}</Badge>
             {market === 'US' ? <Badge variant="info">核心池</Badge> : null}
             {assetType === 'etf' ? <Badge variant="info">本地精选 · 动态行情</Badge> : null}
+            {historyCoverage !== null && historyTotal !== null ? (
+              <Badge variant={historyStale ? 'warning' : 'success'}>
+                历史 {historyCoverage}/{historyTotal}
+              </Badge>
+            ) : null}
+            {historyAsOfDate ? <span>历史截至 {historyAsOfDate}</span> : null}
             {rankingUpdatedAt ? <span>{new Date(rankingUpdatedAt).toLocaleString('zh-CN')}</span> : null}
           </div>
         </div>
@@ -786,8 +846,12 @@ const RankingTile: React.FC<RankingTileProps> = ({
           <ValueCell label="250日回撤" value={formatDrawdown(item.drawdown250dPct)} />
           <ValueCell label="20日收益" value={formatPct(item.return20dPct)} />
           <ValueCell
-            label={rankingMetric === 'volume' ? '成交量' : '成交额'}
-            value={formatAmount(rankingMetric === 'volume' ? item.volume : item.amount)}
+            label={ETF_HISTORY_METRICS.has(rankingMetric) ? '数据截至' : rankingMetric === 'volume' ? '成交量' : '成交额'}
+            value={rankingMetric === 'volume'
+              ? formatAmount(item.volume)
+              : ETF_HISTORY_METRICS.has(rankingMetric)
+                ? item.historyAsOfDate || '-'
+                : formatAmount(item.amount)}
           />
         </>
       ) : (
@@ -799,9 +863,14 @@ const RankingTile: React.FC<RankingTileProps> = ({
       )}
     </div>
     <div className="mt-3 flex items-center justify-between gap-2">
-      <Badge variant={item.assetType === 'etf' || item.industry ? 'info' : 'default'}>
-        {item.assetType === 'etf' ? `${item.benchmarkName || '宽基指数'} · ${etfCategoryLabel(item.category)}` : item.industry || '未分类'}
-      </Badge>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Badge variant={item.assetType === 'etf' || item.industry ? 'info' : 'default'}>
+          {item.assetType === 'etf' ? `${item.benchmarkName || '宽基指数'} · ${etfCategoryLabel(item.category)}` : item.industry || '未分类'}
+        </Badge>
+        {item.assetType === 'etf' && item.historyStale && (
+          <Badge variant="warning">旧缓存</Badge>
+        )}
+      </div>
       <div className="flex gap-1.5">
         <WatchlistStarButton
           stockName={item.name}

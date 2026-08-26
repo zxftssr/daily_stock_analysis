@@ -21,6 +21,7 @@ from src.data.stock_index_loader import (
     load_stock_index_entries,
 )
 from src.services import stock_market_metrics as market_metrics
+from src.services.etf_history_service import EtfHistoryService
 from src.services.stock_service import StockService
 
 logger = logging.getLogger(__name__)
@@ -69,17 +70,27 @@ class _BatchCache:
 
 @dataclass(frozen=True)
 class _EtfMetricsResult:
-    metrics: dict[str, float | None]
+    metrics: dict[str, Any]
     reliable: bool
     as_of_date: date | None = None
 
 
 _BATCH_CACHE: dict[str, _BatchCache] = {}
 _BATCH_CACHE_LOCK = RLock()
-_ETF_METRICS_CACHE: dict[str, tuple[float, dict[str, float | None], bool, date | None]] = {}
+_ETF_METRICS_CACHE: dict[str, tuple[float, dict[str, Any], bool, date | None]] = {}
 _ETF_METRICS_CACHE_LOCK = RLock()
 _ETF_METRICS_EXECUTOR = ThreadPoolExecutor(max_workers=ETF_METRICS_CONCURRENCY)
 _ETF_METRICS_INFLIGHT: dict[str, Future[_EtfMetricsResult]] = {}
+
+
+def invalidate_etf_metrics_cache() -> None:
+    """Drop discovery metrics after a successful or partial history warmup."""
+    with _ETF_METRICS_CACHE_LOCK:
+        futures = list(_ETF_METRICS_INFLIGHT.values())
+        _ETF_METRICS_INFLIGHT.clear()
+        _ETF_METRICS_CACHE.clear()
+    for future in futures:
+        future.cancel()
 
 
 class StockDiscoveryService:
@@ -134,12 +145,25 @@ class StockDiscoveryService:
             if not candidates:
                 return self._empty_payload("ok")
             if asset_type == "etf":
-                raw_quote_result = self._get_cn_etf_batch_quotes()
+                if metric in ETF_HISTORY_METRICS:
+                    raw_quote_result = BatchQuoteResult(
+                        df=pd.DataFrame(),
+                        source="history_cache",
+                        updated_at=None,
+                        status="ok",
+                    )
+                else:
+                    raw_quote_result = self._get_cn_etf_batch_quotes()
             else:
                 raw_quote_result = self._get_hk_batch_quotes() if market == "HK" else self._get_cn_batch_quotes(market)
             quote_result = self._coerce_batch_result(raw_quote_result)
 
-        if quote_result.df is None or quote_result.df.empty:
+        history_only_fallback = (
+            asset_type == "etf"
+            and metric in ETF_HISTORY_METRICS
+            and (quote_result.df is None or quote_result.df.empty)
+        )
+        if (quote_result.df is None or quote_result.df.empty) and not history_only_fallback:
             return self._empty_payload(
                 quote_result.status,
                 source=quote_result.source,
@@ -147,7 +171,11 @@ class StockDiscoveryService:
                 message=NO_BATCH_CACHE_MESSAGE if quote_result.status == "unavailable" else None,
             )
 
-        quote_lookup = self._build_quote_lookup(quote_result.df, market)
+        quote_lookup = (
+            self._build_quote_lookup(quote_result.df, market)
+            if quote_result.df is not None and not quote_result.df.empty
+            else {}
+        )
         rows: list[dict[str, Any]] = []
         missing_count = 0
         updated_at = self._format_dt(quote_result.updated_at)
@@ -156,11 +184,30 @@ class StockDiscoveryService:
         else:
             etf_metrics, unreliable_etf_metrics = {}, set()
 
+        history_total = len(candidates) if asset_type == "etf" and metric in ETF_HISTORY_METRICS else None
+        history_coverage = (
+            sum(values.get(metric) is not None for values in etf_metrics.values())
+            if history_total is not None else None
+        )
+        history_dates = sorted(
+            str(values.get("history_as_of_date"))
+            for values in etf_metrics.values()
+            if values.get("history_as_of_date")
+        )
+        history_as_of_date = history_dates[0] if history_dates else None
+        history_stale = (
+            bool(unreliable_etf_metrics) or (history_coverage or 0) < (history_total or 0)
+            if history_total is not None else None
+        )
+
         for entry in candidates:
             quote_row = self._find_quote_row(entry, quote_lookup)
             if quote_row is None:
-                missing_count += 1
-                continue
+                if history_only_fallback:
+                    quote_row = pd.Series(dtype=object)
+                else:
+                    missing_count += 1
+                    continue
             item = self._build_ranking_item(
                 entry=entry,
                 quote_row=quote_row,
@@ -180,15 +227,40 @@ class StockDiscoveryService:
         rows.sort(key=lambda item: item.get(metric), reverse=reverse)
 
         status = quote_result.status
-        if status == "ok" and missing_count > 0:
+        status_message = None
+        if history_total is not None and history_coverage == 0:
+            status = "unavailable"
+            status_message = "本地尚无 ETF 历史行情，请先执行历史行情预热。"
+        elif history_total is not None and history_coverage:
+            reliable_coverage = sum(
+                values.get(metric) is not None and code not in unreliable_etf_metrics
+                for code, values in etf_metrics.items()
+            )
+            if reliable_coverage == history_total:
+                status = "ok"
+            elif reliable_coverage == 0 and history_coverage == history_total:
+                status = "stale"
+            else:
+                status = "partial"
+        elif status == "ok" and missing_count > 0:
             status = "partial"
 
-        return {
+        payload = {
             "status": status,
-            "source": quote_result.source,
-            "updated_at": updated_at,
+            "source": None if status == "unavailable" else quote_result.source or ("history_cache" if history_coverage else None),
+            "updated_at": updated_at or history_as_of_date,
             "items": rows[:limit],
         }
+        if status_message:
+            payload["message"] = status_message
+        if history_total is not None:
+            payload.update({
+                "history_as_of_date": history_as_of_date,
+                "history_coverage": history_coverage,
+                "history_total": history_total,
+                "history_stale": history_stale,
+            })
+        return payload
 
     def _filter_entries(
         self,
@@ -471,8 +543,11 @@ class StockDiscoveryService:
         market: str,
         source: str | None,
         updated_at: str | None,
-        extra_metrics: dict[str, float | None] | None = None,
+        extra_metrics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        metrics_payload = dict(extra_metrics or {})
+        history_source = metrics_payload.pop("_history_source", None)
+        history_as_of_date = metrics_payload.get("history_as_of_date")
         item = {
             "code": entry.canonical_code,
             "name": entry.name_zh if entry.asset_type == "etf" else (
@@ -484,22 +559,22 @@ class StockDiscoveryService:
             "change_pct": safe_float(self._first_value(quote_row, ("涨跌幅", "change_pct", "pct_chg", "changePercent"))),
             "amount": safe_float(self._first_value(quote_row, ("成交额", "amount", "turnover"))),
             "volume": safe_int(self._first_value(quote_row, ("成交量", "volume"))),
-            "source": source,
-            "updated_at": updated_at,
+            "source": source or history_source,
+            "updated_at": updated_at or history_as_of_date,
             "asset_type": entry.asset_type,
             "category": entry.etf_category,
             "benchmark_code": entry.benchmark_code,
             "benchmark_name": entry.benchmark_name,
         }
-        item.update(extra_metrics or {})
+        item.update(metrics_payload)
         return item
 
     def _get_etf_metrics(
         self,
         entries: Iterable[StockIndexEntry],
-    ) -> tuple[dict[str, dict[str, float | None]], set[str]]:
+    ) -> tuple[dict[str, dict[str, Any]], set[str]]:
         now = time.time()
-        result: dict[str, dict[str, float | None]] = {}
+        result: dict[str, dict[str, Any]] = {}
         unreliable: set[str] = set()
         pending: list[StockIndexEntry] = []
         with _ETF_METRICS_CACHE_LOCK:
@@ -577,42 +652,11 @@ class StockDiscoveryService:
 
     def _load_etf_metrics(self, code: str) -> _EtfMetricsResult:
         assert self.stock_service is not None
-        payload = self.stock_service.get_history_data(code, days=420)
-        if payload.get("stale") is True or payload.get("partial_cache") is True:
-            return _EtfMetricsResult(self._empty_etf_metrics(), False)
-        try:
-            from data_provider.base import normalize_stock_code
-            from src.core.trading_calendar import get_effective_trading_date, get_market_for_stock
-
-            observed_date = date.fromisoformat(str(payload.get("as_of_date") or "")[:10])
-            expected_date = get_effective_trading_date(
-                get_market_for_stock(normalize_stock_code(code))
-            )
-            if observed_date < expected_date:
-                return _EtfMetricsResult(self._empty_etf_metrics(), False)
-        except (TypeError, ValueError):
-            return _EtfMetricsResult(self._empty_etf_metrics(), False)
-        closes = [
-            value
-            for item in payload.get("data") or []
-            if (value := safe_float(item.get("close"))) is not None and value > 0
-        ]
-        if not closes:
-            return _EtfMetricsResult(self._empty_etf_metrics(), False)
-
-        latest = closes[-1]
-        window_250 = closes[-250:]
-        peak_250 = max(window_250) if len(window_250) >= 250 else None
-        metrics = {
-            "drawdown_250d_pct": round((peak_250 - latest) / peak_250 * 100, 4) if peak_250 else None,
-            "return_20d_pct": self._period_return(closes, 20),
-            "return_60d_pct": self._period_return(closes, 60),
-            "return_250d_pct": self._period_return(closes, 250),
-        }
+        loaded = EtfHistoryService(self.stock_service).get_metrics(code, allow_network=False)
         return _EtfMetricsResult(
-            metrics,
-            all(value is not None for value in metrics.values()),
-            observed_date,
+            loaded.ranking_metrics(),
+            loaded.reliable,
+            loaded.as_of_date,
         )
 
     def _store_etf_metrics_result(
@@ -625,8 +669,9 @@ class StockDiscoveryService:
         except Exception:
             loaded = _EtfMetricsResult(self._empty_etf_metrics(), False)
         with _ETF_METRICS_CACHE_LOCK:
-            if _ETF_METRICS_INFLIGHT.get(code) is future:
-                _ETF_METRICS_INFLIGHT.pop(code, None)
+            if _ETF_METRICS_INFLIGHT.get(code) is not future:
+                return
+            _ETF_METRICS_INFLIGHT.pop(code, None)
             _ETF_METRICS_CACHE[code] = (
                 time.time(),
                 dict(loaded.metrics),
@@ -650,18 +695,14 @@ class StockDiscoveryService:
         return as_of_date >= expected_date
 
     @staticmethod
-    def _period_return(closes: list[float], periods: int) -> float | None:
-        if len(closes) <= periods or closes[-periods - 1] <= 0:
-            return None
-        return round((closes[-1] / closes[-periods - 1] - 1) * 100, 4)
-
-    @staticmethod
-    def _empty_etf_metrics() -> dict[str, float | None]:
+    def _empty_etf_metrics() -> dict[str, Any]:
         return {
             "drawdown_250d_pct": None,
             "return_20d_pct": None,
             "return_60d_pct": None,
             "return_250d_pct": None,
+            "history_as_of_date": None,
+            "history_stale": True,
         }
 
     @staticmethod

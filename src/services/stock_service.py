@@ -95,6 +95,7 @@ class StockService:
         period: str = "daily",
         days: int = 30,
         force_refresh: bool = False,
+        allow_network: bool = True,
     ) -> Dict[str, Any]:
         """
         获取股票历史行情
@@ -104,6 +105,7 @@ class StockService:
             period: K 线周期 (daily/weekly/monthly)
             days: 自然日窗口天数
             force_refresh: 是否跳过新鲜缓存并尝试刷新外部源
+            allow_network: 缓存不足时是否允许访问外部行情源
             
         Returns:
             历史行情数据字典
@@ -119,11 +121,14 @@ class StockService:
             )
         
         try:
-            snapshot = load_history_snapshot(
-                stock_code=stock_code,
-                days=days,
-                force_refresh=force_refresh,
-            )
+            snapshot_kwargs = {
+                "stock_code": stock_code,
+                "days": days,
+                "force_refresh": force_refresh,
+            }
+            if not allow_network:
+                snapshot_kwargs["allow_network"] = False
+            snapshot = load_history_snapshot(**snapshot_kwargs)
             stock_name = get_index_stock_name(stock_code)
             data = self._serialize_history_rows(
                 snapshot.df,
@@ -145,6 +150,7 @@ class StockService:
                 "requested_days": snapshot.requested_days,
                 "effective_days": snapshot.effective_days,
                 "message": snapshot.message,
+                "persistence_error": snapshot.persistence_error,
                 "data": data,
             }
             

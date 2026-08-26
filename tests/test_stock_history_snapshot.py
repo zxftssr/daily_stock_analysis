@@ -239,6 +239,26 @@ class StockHistorySnapshotTestCase(unittest.TestCase):
         self.assertFalse(result.cache_hit)
         self.assertFalse(result.stale)
 
+    def test_network_data_exposes_sqlite_persistence_failure(self) -> None:
+        from src.services.history_loader import load_history_snapshot
+
+        effective = date(2026, 3, 27)
+        db = _FakeDb()
+        db.save_daily_data.side_effect = OSError("read-only database")
+        network_df = pd.DataFrame(
+            [{"date": effective, "open": 10, "high": 11, "low": 9.5, "close": 10.5, "volume": 1000}]
+        )
+        manager = SimpleNamespace(get_daily_data=MagicMock(return_value=(network_df, "eastmoney")))
+
+        with patch("src.storage.get_db", return_value=db), \
+             patch("src.services.history_loader._get_fetcher_manager", return_value=manager), \
+             patch("src.core.trading_calendar.get_effective_trading_date", return_value=effective):
+            result = load_history_snapshot("000001.SZ", days=30)
+
+        self.assertEqual(result.source, "eastmoney")
+        self.assertEqual(result.persistence_error, "read-only database")
+        self.assertIsNotNone(result.df)
+
     def test_outdated_network_history_is_marked_stale(self) -> None:
         from src.services.history_loader import load_history_snapshot
 
@@ -355,6 +375,32 @@ class StockHistorySnapshotTestCase(unittest.TestCase):
 
         self.assertEqual([row["date"] for row in result["data"]], ["2025-07-04", "2026-07-03"])
         self.assertFalse(result["partial_cache"])
+
+    def test_stock_service_supports_cache_only_history_reads(self) -> None:
+        from src.services.history_loader import HistoryLoadResult
+        from src.services.stock_service import StockService
+
+        snapshot = HistoryLoadResult(
+            df=pd.DataFrame(),
+            source=None,
+            cache_hit=False,
+            stale=False,
+            partial_cache=False,
+            as_of_date=None,
+            requested_days=550,
+            effective_days=550,
+            actual_records=0,
+            message="本地尚无历史行情",
+        )
+        with patch("src.services.stock_service.load_history_snapshot", return_value=snapshot) as load:
+            StockService().get_history_data("510300", days=550, allow_network=False)
+
+        load.assert_called_once_with(
+            stock_code="510300",
+            days=550,
+            force_refresh=False,
+            allow_network=False,
+        )
 
     def test_history_endpoint_exposes_metadata_and_force_refresh(self) -> None:
         auth._auth_enabled = None

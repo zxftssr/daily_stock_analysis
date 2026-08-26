@@ -16,6 +16,7 @@ vi.mock('../../hooks/useStockIndex', () => ({
 vi.mock('../../api/stocks', () => ({
   stocksApi: {
     getRankings: vi.fn(),
+    warmEtfHistory: vi.fn(),
   },
 }));
 
@@ -217,6 +218,16 @@ describe('DiscoverPage', () => {
       updatedAt: '2026-06-21T00:00:00+00:00',
       items: [],
     });
+    vi.mocked(stocksApi.warmEtfHistory).mockResolvedValue({
+      status: 'ok',
+      startedAt: '2026-08-26T18:00:00',
+      completedAt: '2026-08-26T18:00:03',
+      total: 20,
+      succeeded: 20,
+      stale: 0,
+      failed: 0,
+      items: [],
+    });
     vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
       taskId: 'task-1',
       status: 'pending',
@@ -274,23 +285,44 @@ describe('DiscoverPage', () => {
       status: 'ok',
       source: 'mock-etf',
       updatedAt: '2026-08-26T00:00:00+00:00',
-      items: params.assetType === 'etf' ? [{
-        code: '510300.SH',
-        name: '华泰柏瑞沪深300ETF',
-        market: 'CN',
-        assetType: 'etf',
-        category: 'broad_market',
-        benchmarkCode: '000300.SH',
-        benchmarkName: '沪深300',
-        price: 4.2,
-        changePct: -1.2,
-        amount: 2_000_000_000,
-        volume: 100_000_000,
-        drawdown250dPct: 18.5,
-        return20dPct: -6.2,
-        return60dPct: -10.1,
-        return250dPct: -8.4,
-      }] : [],
+      historyAsOfDate: '2026-08-25',
+      historyCoverage: 2,
+      historyTotal: 2,
+      historyStale: true,
+      items: params.assetType === 'etf' ? [
+        {
+          code: '510300.SH',
+          name: '华泰柏瑞沪深300ETF',
+          market: 'CN',
+          assetType: 'etf',
+          category: 'broad_market',
+          benchmarkCode: '000300.SH',
+          benchmarkName: '沪深300',
+          price: 4.2,
+          changePct: -1.2,
+          amount: 2_000_000_000,
+          volume: 100_000_000,
+          drawdown250dPct: 18.5,
+          return20dPct: -6.2,
+          return60dPct: -10.1,
+          return250dPct: -8.4,
+          historyAsOfDate: '2026-08-25',
+          historyStale: false,
+        },
+        {
+          code: '510500.SH',
+          name: '南方中证500ETF',
+          market: 'CN',
+          assetType: 'etf',
+          category: 'broad_market',
+          benchmarkCode: '000905.SH',
+          benchmarkName: '中证500',
+          drawdown250dPct: 20.1,
+          return20dPct: -7.2,
+          historyAsOfDate: '2026-08-20',
+          historyStale: true,
+        },
+      ] : [],
     }));
 
     render(
@@ -310,6 +342,14 @@ describe('DiscoverPage', () => {
     });
     expect(screen.getByRole('heading', { name: '宽基 ETF 精选池' })).toBeInTheDocument();
     expect(screen.getAllByText('沪深300').length).toBeGreaterThan(0);
+    expect(screen.getByText('历史 2/2')).toBeInTheDocument();
+    expect(screen.getByText('历史截至 2026-08-25')).toBeInTheDocument();
+    expect(screen.getAllByText('旧缓存')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: '立即预热 ETF 历史行情' }));
+    await waitFor(() => {
+      expect(stocksApi.warmEtfHistory).toHaveBeenCalledWith(true);
+    });
+    expect(await screen.findByText('ETF 历史行情已预热')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '成交量' }));
     await waitFor(() => {
       expect(stocksApi.getRankings).toHaveBeenCalledWith(expect.objectContaining({
@@ -318,7 +358,7 @@ describe('DiscoverPage', () => {
         direction: 'desc',
       }));
     });
-    expect(screen.getAllByText('成交量')).toHaveLength(2);
+    expect(screen.getAllByText('成交量')).toHaveLength(3);
     fireEvent.click(screen.getByRole('button', { name: '为 华泰柏瑞沪深300ETF 制定计划' }));
     expect(mockNavigate).toHaveBeenCalledWith(
       '/plans?symbol=510300&name=%E5%8D%8E%E6%B3%B0%E6%9F%8F%E7%91%9E%E6%B2%AA%E6%B7%B1300ETF&market=CN&strategyType=index_crash&benchmarkSymbol=510300',

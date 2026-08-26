@@ -236,6 +236,30 @@ def _evaluate_investment_plans(
     )
 
 
+def _warm_etf_history_for_daily_run() -> Dict[str, Any]:
+    """Warm curated ETF history before daily analysis and plan evaluation."""
+    from src.services.etf_history_service import warm_etf_history_pool
+    from src.services.stock_discovery_service import invalidate_etf_metrics_cache
+
+    try:
+        result = warm_etf_history_pool(
+            force_refresh=False,
+            on_late_completion=invalidate_etf_metrics_cache,
+        )
+        invalidate_etf_metrics_cache()
+        logger.info(
+            "ETF 日线预热完成: total=%s succeeded=%s stale=%s failed=%s",
+            result.get("total", 0),
+            result.get("succeeded", 0),
+            result.get("stale", 0),
+            result.get("failed", 0),
+        )
+        return result
+    except Exception as exc:
+        logger.warning("ETF 日线预热失败（继续执行每日任务）: %s", exc, exc_info=True)
+        return {"status": "unavailable", "total": 0, "succeeded": 0, "stale": 0, "failed": 0}
+
+
 def _get_plan_evaluation_markets(config: Config, args: argparse.Namespace) -> Optional[set[str]]:
     """Return markets eligible for scheduled plan checks; None means fail-open/all."""
     if getattr(args, "force_run", False) or not getattr(config, "trading_day_check_enabled", True):
@@ -985,6 +1009,7 @@ def main() -> int:
 
             def scheduled_task():
                 runtime_config = _reload_runtime_config()
+                _warm_etf_history_for_daily_run()
                 run_full_analysis(runtime_config, args, scheduled_stock_codes)
 
             background_tasks = []

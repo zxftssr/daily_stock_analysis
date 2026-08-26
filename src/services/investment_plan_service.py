@@ -22,6 +22,7 @@ from src.repositories.investment_plan_repo import (
 )
 from src.services.portfolio_service import PortfolioService
 from src.services.stock_code_utils import normalize_code
+from src.services.etf_history_service import EtfHistoryService
 from src.services.stock_service import StockService
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,7 @@ class InvestmentPlanService:
     ):
         self.repo = repo or InvestmentPlanRepository()
         self.stock_service = stock_service or StockService()
+        self.etf_history_service = EtfHistoryService(self.stock_service)
         self.portfolio_service = portfolio_service or PortfolioService()
         self.notifier = notifier
         self._quote_cache: Dict[str, Optional[Dict[str, Any]]] = {}
@@ -595,37 +597,10 @@ class InvestmentPlanService:
     def _get_benchmark_drawdown(self, symbol: str) -> Optional[float]:
         if symbol in self._drawdown_cache:
             return self._drawdown_cache[symbol]
-        history = self.stock_service.get_history_data(symbol, period="daily", days=550)
-        if history.get("stale") is True or history.get("partial_cache") is True:
-            self._drawdown_cache[symbol] = None
-            return None
-        try:
-            from data_provider.base import normalize_stock_code
-            from src.core.trading_calendar import get_effective_trading_date, get_market_for_stock
-
-            as_of_date = date.fromisoformat(str(history.get("as_of_date") or "")[:10])
-            expected_date = get_effective_trading_date(
-                get_market_for_stock(normalize_stock_code(symbol))
-            )
-        except (TypeError, ValueError):
-            self._drawdown_cache[symbol] = None
-            return None
-        if as_of_date < expected_date:
-            self._drawdown_cache[symbol] = None
-            return None
-        rows = list(history.get("data") or [])[-250:]
-        if len(rows) < 250:
-            self._drawdown_cache[symbol] = None
-            return None
-        highs = [self._finite_positive(row.get("high")) for row in rows]
-        highs = [value for value in highs if value is not None]
-        latest = self._finite_positive(rows[-1].get("close"))
-        if not highs or latest is None:
-            self._drawdown_cache[symbol] = None
-            return None
-        peak = max(highs)
-        drawdown = max(0.0, (peak - latest) / peak * 100.0)
-        self._drawdown_cache[symbol] = round(drawdown, 4)
+        metrics = self.etf_history_service.get_metrics(symbol)
+        self._drawdown_cache[symbol] = (
+            metrics.drawdown_250d_pct if metrics.reliable else None
+        )
         return self._drawdown_cache[symbol]
 
     def _load_constraints(self, plan: Dict[str, Any]) -> Dict[str, Any]:

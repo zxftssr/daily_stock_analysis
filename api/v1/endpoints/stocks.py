@@ -20,6 +20,7 @@ from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from api.v1.schemas.stocks import (
     ExtractFromImageResponse,
     ExtractItem,
+    EtfHistoryWarmupResponse,
     KLineData,
     StockHistoryResponse,
     StockQuote,
@@ -39,6 +40,11 @@ from src.services.import_parser import (
 from src.services.stock_discovery_service import (
     UNCATEGORIZED_INDUSTRY,
     StockDiscoveryService,
+    invalidate_etf_metrics_cache,
+)
+from src.services.etf_history_service import (
+    EtfHistoryWarmupInProgressError,
+    warm_etf_history_pool,
 )
 from src.services.stock_service import StockService
 
@@ -294,6 +300,29 @@ def get_stock_rankings(
             status_code=500,
             detail={"error": "internal_error", "message": "获取标的榜单失败"},
         )
+
+
+@router.post(
+    "/etf-history/warmup",
+    response_model=EtfHistoryWarmupResponse,
+    summary="立即预热宽基 ETF 历史行情",
+    description="并发刷新精选池日线并写入通用 stock_daily SQLite 缓存；单只失败不影响其他 ETF。",
+)
+def warmup_etf_history(
+    force_refresh: bool = Query(True, description="是否强制尝试外部行情刷新"),
+) -> EtfHistoryWarmupResponse:
+    try:
+        payload = warm_etf_history_pool(
+            force_refresh=force_refresh,
+            on_late_completion=invalidate_etf_metrics_cache,
+        )
+    except EtfHistoryWarmupInProgressError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "warmup_in_progress", "message": str(exc)},
+        )
+    invalidate_etf_metrics_cache()
+    return EtfHistoryWarmupResponse(**payload)
 
 
 @router.get(

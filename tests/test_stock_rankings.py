@@ -58,7 +58,7 @@ class _HistoryServiceStub:
         self.stale = stale
         self.partial_cache = partial_cache
 
-    def get_history_data(self, code, days=420):
+    def get_history_data(self, code, days=420, **_kwargs):
         return {
             "stale": self.stale,
             "partial_cache": self.partial_cache,
@@ -76,10 +76,10 @@ class _BlockingHistoryService(_HistoryServiceStub):
         self.release = Event()
         self.calls = 0
 
-    def get_history_data(self, code, days=420):
+    def get_history_data(self, code, days=420, **kwargs):
         self.calls += 1
         self.release.wait(timeout=2)
-        return super().get_history_data(code, days=days)
+        return super().get_history_data(code, days=days, **kwargs)
 
 
 class StockRankingsTestCase(unittest.TestCase):
@@ -147,7 +147,7 @@ class StockRankingsTestCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "currently supports CN only"):
             service.get_rankings(market="HK", asset_type="etf")
 
-    def test_etf_rankings_mark_stale_history_metrics_as_partial(self):
+    def test_etf_rankings_keep_stale_history_metrics_visible_and_marked(self):
         entry = _entry(
             "510300.SH", "510300", "沪深300ETF", "CN",
             asset_type="etf", category="broad_market",
@@ -173,8 +173,12 @@ class StockRankingsTestCase(unittest.TestCase):
                 market="CN", asset_type="etf", metric="drawdown_250d_pct", direction="desc"
             )
 
-        self.assertEqual(payload["status"], "partial")
-        self.assertEqual(payload["items"], [])
+        self.assertEqual(payload["status"], "stale")
+        self.assertEqual(payload["items"][0]["drawdown_250d_pct"], 20.0)
+        self.assertTrue(payload["items"][0]["history_stale"])
+        self.assertEqual(payload["history_coverage"], 1)
+        self.assertEqual(payload["history_total"], 1)
+        self.assertTrue(payload["history_stale"])
 
     def test_etf_realtime_rankings_skip_history_metrics(self):
         entry = _entry(
@@ -199,6 +203,47 @@ class StockRankingsTestCase(unittest.TestCase):
         get_metrics.assert_not_called()
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["items"][0]["volume"], 300)
+
+    def test_etf_history_rankings_survive_batch_quote_outage(self):
+        entry = _entry(
+            "510300.SH", "510300", "沪深300ETF", "CN",
+            asset_type="etf", category="broad_market",
+        )
+        service = StockDiscoveryService(
+            index_entries=[entry],
+            stock_service=_HistoryServiceStub({"510300": [100.0] * 250 + [80.0]}),
+        )
+        with patch.object(service, "_get_cn_etf_batch_quotes") as batch_quotes:
+            payload = service.get_rankings(
+                market="CN", asset_type="etf", metric="drawdown_250d_pct", direction="desc"
+            )
+
+        batch_quotes.assert_not_called()
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["source"], "history_cache")
+        self.assertEqual(payload["history_coverage"], 1)
+        self.assertEqual(payload["items"][0]["drawdown_250d_pct"], 20.0)
+        self.assertIsNone(payload["items"][0]["price"])
+
+    def test_etf_history_rankings_without_cache_are_unavailable(self):
+        entry = _entry(
+            "510300.SH", "510300", "沪深300ETF", "CN",
+            asset_type="etf", category="broad_market",
+        )
+        service = StockDiscoveryService(
+            index_entries=[entry],
+            stock_service=_HistoryServiceStub({}),
+        )
+
+        payload = service.get_rankings(
+            market="CN", asset_type="etf", metric="drawdown_250d_pct", direction="desc"
+        )
+
+        self.assertEqual(payload["status"], "unavailable")
+        self.assertIsNone(payload["source"])
+        self.assertEqual(payload["items"], [])
+        self.assertEqual(payload["history_coverage"], 0)
+        self.assertIn("预热", payload["message"])
 
     def test_etf_metric_timeout_is_bounded_and_negative_cached(self):
         entry = _entry(
@@ -644,6 +689,84 @@ class StockRankingsTestCase(unittest.TestCase):
             asset_type="etf",
             category="broad_market",
         )
+
+    def test_etf_history_warmup_route_invalidates_discovery_metrics(self):
+        auth._auth_enabled = None
+        app = create_app()
+        client = TestClient(app)
+        payload = {
+            "status": "partial",
+            "started_at": "2026-08-26T18:00:00",
+            "completed_at": "2026-08-26T18:00:03",
+            "total": 2,
+            "succeeded": 1,
+            "stale": 0,
+            "failed": 1,
+            "items": [
+                {"code": "510300.SH", "name": "沪深300ETF", "status": "ok"},
+                {"code": "510500.SH", "name": "中证500ETF", "status": "error", "message": "boom"},
+            ],
+        }
+        with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
+             patch("src.auth.is_auth_enabled", return_value=False), \
+             patch("api.v1.endpoints.stocks.warm_etf_history_pool", return_value=payload) as warm, \
+             patch("api.v1.endpoints.stocks.invalidate_etf_metrics_cache") as invalidate:
+            response = client.post("/api/v1/stocks/etf-history/warmup?force_refresh=true")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "partial")
+        self.assertEqual(response.json()["failed"], 1)
+        warm.assert_called_once_with(
+            force_refresh=True,
+            on_late_completion=invalidate,
+        )
+        invalidate.assert_called_once_with()
+
+    def test_etf_history_warmup_route_returns_conflict_when_batch_is_running(self):
+        from src.services.etf_history_service import EtfHistoryWarmupInProgressError
+
+        auth._auth_enabled = None
+        app = create_app()
+        client = TestClient(app)
+        with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
+             patch("src.auth.is_auth_enabled", return_value=False), \
+             patch(
+                 "api.v1.endpoints.stocks.warm_etf_history_pool",
+                 side_effect=EtfHistoryWarmupInProgressError("ETF 历史行情预热正在进行"),
+             ), \
+             patch("api.v1.endpoints.stocks.invalidate_etf_metrics_cache") as invalidate:
+            response = client.post("/api/v1/stocks/etf-history/warmup")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"], "warmup_in_progress")
+        invalidate.assert_not_called()
+
+    def test_etf_history_warmup_route_accepts_timeout_item(self):
+        auth._auth_enabled = None
+        app = create_app()
+        client = TestClient(app)
+        payload = {
+            "status": "unavailable",
+            "started_at": "2026-08-26T18:00:00",
+            "completed_at": "2026-08-26T18:02:00",
+            "total": 1,
+            "succeeded": 0,
+            "stale": 0,
+            "failed": 1,
+            "items": [{
+                "code": "510300.SH",
+                "name": "沪深300ETF",
+                "status": "timeout",
+                "message": "预热超过批次时限 120 秒",
+            }],
+        }
+        with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
+             patch("src.auth.is_auth_enabled", return_value=False), \
+             patch("api.v1.endpoints.stocks.warm_etf_history_pool", return_value=payload):
+            response = client.post("/api/v1/stocks/etf-history/warmup")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["items"][0]["status"], "timeout")
 
 
 if __name__ == "__main__":

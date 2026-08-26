@@ -160,6 +160,7 @@ class HistoryLoadResult:
     effective_days: int
     actual_records: int
     message: Optional[str] = None
+    persistence_error: Optional[str] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
 
@@ -205,6 +206,7 @@ def _make_result(
     end: Optional[date] = None,
     partial_cache: bool = False,
     message: Optional[str] = None,
+    persistence_error: Optional[str] = None,
 ) -> HistoryLoadResult:
     if df is not None and not df.empty:
         actual_records = len(df)
@@ -224,6 +226,7 @@ def _make_result(
         effective_days=effective_days,
         actual_records=actual_records,
         message=message,
+        persistence_error=persistence_error,
         start_date=start.isoformat() if start else None,
         end_date=end.isoformat() if end else None,
     )
@@ -254,6 +257,7 @@ def load_history_snapshot(
     days: int = 60,
     force_refresh: bool = False,
     target_date: Optional[date] = None,
+    allow_network: bool = True,
 ) -> HistoryLoadResult:
     """Load daily history for Web/API callers with DB-first cache metadata.
 
@@ -297,6 +301,36 @@ def load_history_snapshot(
             end=end,
         )
 
+    if not allow_network:
+        fallback_df = stale_df if stale_df is not None else fresh_df
+        if fallback_df is not None and not fallback_df.empty:
+            return _make_result(
+                df=fallback_df,
+                source="db_cache",
+                cache_hit=True,
+                stale=stale_df is not None,
+                requested_days=requested_days,
+                effective_days=effective_days,
+                start=start,
+                end=end,
+                partial_cache=stale_is_partial,
+                message=(
+                    "本地缓存尚未完整覆盖请求窗口，请执行 ETF 历史行情预热。"
+                    if stale_is_partial else None
+                ),
+            )
+        return _make_result(
+            df=None,
+            source=None,
+            cache_hit=False,
+            stale=False,
+            requested_days=requested_days,
+            effective_days=effective_days,
+            start=start,
+            end=end,
+            message="本地尚无历史行情，请执行 ETF 历史行情预热。",
+        )
+
     try:
         manager = _get_fetcher_manager()
         df, source = manager.get_daily_data(
@@ -309,15 +343,18 @@ def load_history_snapshot(
             latest_external_date = _latest_df_date(df)
             external_stale = latest_external_date is None or latest_external_date < end
             _, normalized_code = _history_code_candidates(stock_code)
+            persistence_error = None
             if db is None:
                 try:
                     db = get_db()
-                except Exception:
+                except Exception as exc:
                     db = None
+                    persistence_error = str(exc)
             if db is not None:
                 try:
                     db.save_daily_data(df, normalized_code, source or "Unknown")
                 except Exception as exc:
+                    persistence_error = str(exc)
                     logger.warning(
                         "load_history_snapshot(%s): daily history persistence failed: %s",
                         normalized_code,
@@ -337,6 +374,7 @@ def load_history_snapshot(
                     "外部行情未覆盖最近完整交易日，正在展示过期 K 线数据。"
                     if external_stale else None
                 ),
+                persistence_error=persistence_error,
             )
     except Exception as e:
         logger.warning("load_history_snapshot(%s): DataFetcherManager failed: %s", stock_code, e)

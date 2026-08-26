@@ -119,6 +119,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main._build_schedule_time_provider", return_value=lambda: "18:00"), \
              patch("main._get_plan_evaluation_markets", return_value={"cn"}), \
              patch("main._evaluate_investment_plans") as evaluate_plans, \
+             patch("main._warm_etf_history_for_daily_run") as warm_etf_history, \
              patch("main.setup_logging"), \
              patch("main.run_full_analysis") as run_full_analysis, \
              patch("main.logger.warning") as warning_log, \
@@ -142,6 +143,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             check_frequencies={"hourly"},
         )
         run_full_analysis.assert_called_once_with(config, args, None)
+        warm_etf_history.assert_called_once_with()
         warning_log.assert_any_call(
             "定时模式下检测到 --stocks 参数；计划执行将忽略启动时股票快照，并在每次运行前重新读取最新的 STOCK_LIST。"
         )
@@ -169,6 +171,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main.get_config", return_value=startup_config), \
              patch("main._reload_runtime_config", return_value=runtime_config), \
              patch("main._build_schedule_time_provider", return_value=lambda: "09:30"), \
+             patch("main._warm_etf_history_for_daily_run") as warm_etf_history, \
              patch("main.setup_logging"), \
              patch("main.run_full_analysis") as run_full_analysis, \
              patch("src.scheduler.run_with_schedule", side_effect=fake_run_with_schedule):
@@ -180,6 +183,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             {"schedule_time": "18:00", "resolved_schedule_time": "09:30"},
         )
         run_full_analysis.assert_called_once_with(runtime_config, args, None)
+        warm_etf_history.assert_called_once_with()
 
     def test_check_notify_returns_before_other_modes(self) -> None:
         args = self._make_args(check_notify=True, serve=True, schedule=True, market_review=True)
