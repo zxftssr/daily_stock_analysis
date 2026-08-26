@@ -56,6 +56,7 @@ env/
 /data/*
 !/data/us_ranking_core_pool.csv
 !/data/stock_industry_overrides.csv
+!/data/cn_broad_etf_pool.csv
 logs/
 reports/
 *.db

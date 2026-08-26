@@ -477,6 +477,91 @@ def fetch_akshare_cn_batch_quotes() -> pd.DataFrame:
         raise
 
 
+def fetch_efinance_etf_batch_quotes() -> pd.DataFrame:
+    """Fetch the exchange-traded fund snapshot through the protected efinance adapter."""
+    import efinance as ef
+    import data_provider.efinance_fetcher as efinance_fetcher
+
+    source_key = "efinance_etf"
+    circuit_breaker = efinance_fetcher.get_realtime_circuit_breaker()
+    if not circuit_breaker.is_available(source_key):
+        raise RuntimeError(f"{source_key} circuit breaker is open")
+
+    current_time = time.time()
+    cache = efinance_fetcher._etf_realtime_cache
+    if (
+        cache["data"] is not None
+        and not cache["data"].empty
+        and current_time - cache["timestamp"] < cache["ttl"]
+    ):
+        return cache["data"]
+
+    fetcher = efinance_fetcher.EfinanceFetcher()
+    fetcher._set_random_user_agent()
+    fetcher._enforce_rate_limit()
+    try:
+        df = efinance_fetcher._ef_call_with_timeout(ef.stock.get_realtime_quotes, ['ETF'])
+        if df is None or df.empty:
+            raise RuntimeError("efinance ETF batch quote returned empty data")
+        circuit_breaker.record_success(source_key)
+        cache["data"] = df
+        cache["timestamp"] = current_time
+        return df
+    except FuturesTimeout as exc:
+        circuit_breaker.record_failure(source_key, "timeout")
+        raise TimeoutError("efinance ETF batch quote timeout") from exc
+    except Exception as exc:
+        circuit_breaker.record_failure(source_key, str(exc))
+        raise
+
+
+def fetch_akshare_etf_batch_quotes() -> pd.DataFrame:
+    """Fetch the exchange-traded fund snapshot through the protected AkShare adapter."""
+    import akshare as ak
+    import data_provider.akshare_fetcher as akshare_fetcher
+
+    source_key = "akshare_etf"
+    circuit_breaker = akshare_fetcher.get_realtime_circuit_breaker()
+    if not circuit_breaker.is_available(source_key):
+        raise RuntimeError(f"{source_key} circuit breaker is open")
+
+    current_time = time.time()
+    cache = akshare_fetcher._etf_realtime_cache
+    if (
+        cache["data"] is not None
+        and not cache["data"].empty
+        and current_time - cache["timestamp"] < cache["ttl"]
+    ):
+        return cache["data"]
+
+    fetcher = akshare_fetcher.AkshareFetcher()
+    fetcher._set_random_user_agent()
+    fetcher._enforce_rate_limit()
+    try:
+        df = call_with_timeout(
+            ak.fund_etf_spot_em,
+            BATCH_SOURCE_TIMEOUT_SECONDS,
+            "ak.fund_etf_spot_em",
+        )
+        if df is None or df.empty:
+            raise RuntimeError("AkShare ETF batch quote returned empty data")
+        circuit_breaker.record_success(source_key)
+        cache["data"] = df
+        cache["timestamp"] = current_time
+        return df
+    except Exception as exc:
+        circuit_breaker.record_failure(source_key, str(exc))
+        raise
+
+
+def fetch_cn_etf_batch_quotes() -> BatchQuoteResult:
+    """Fetch A-share ETF quotes with the same efinance -> AkShare fallback contract as stocks."""
+    try:
+        return BatchQuoteResult(fetch_efinance_etf_batch_quotes(), "efinance_etf", None, "ok")
+    except Exception:
+        return BatchQuoteResult(fetch_akshare_etf_batch_quotes(), "akshare_etf", None, "ok")
+
+
 def fetch_cn_batch_quotes() -> BatchQuoteResult:
     try:
         return BatchQuoteResult(fetch_efinance_batch_quotes(), "efinance", None, "ok")

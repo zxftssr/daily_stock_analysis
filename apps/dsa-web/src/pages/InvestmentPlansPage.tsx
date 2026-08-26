@@ -359,17 +359,26 @@ const InvestmentPlansPage: React.FC = () => {
   useEffect(() => {
     const symbol = searchParams.get('symbol');
     if (!symbol || drawerOpen) return;
+    const requestedStrategy = searchParams.get('strategyType') as InvestmentStrategyType | null;
+    const strategyType = requestedStrategy && STRATEGY_OPTIONS.some((option) => option.value === requestedStrategy)
+      ? requestedStrategy
+      : null;
+    const template = strategyType ? strategyTemplate(strategyType) : null;
     openCreate({
+      ...(template || {}),
       symbol,
       name: searchParams.get('name') || '',
       market: parsePrefillMarket(searchParams.get('market')),
       accountId: searchParams.get('accountId') || '',
+      benchmarkSymbol: searchParams.get('benchmarkSymbol') || template?.benchmarkSymbol || '',
     });
     const next = new URLSearchParams(searchParams);
     next.delete('symbol');
     next.delete('name');
     next.delete('market');
     next.delete('accountId');
+    next.delete('strategyType');
+    next.delete('benchmarkSymbol');
     setSearchParams(next, { replace: true });
   }, [drawerOpen, openCreate, searchParams, setSearchParams]);
 
@@ -698,7 +707,7 @@ const InvestmentPlansPage: React.FC = () => {
             type="search"
             value={keyword}
             onChange={(event) => setKeyword(event.target.value)}
-            placeholder="股票代码、名称或投资逻辑"
+            placeholder="标的代码、名称或投资逻辑"
           />
         </div>
       </section>
@@ -984,8 +993,8 @@ const PlanEditorDrawer: React.FC<{
           <h3 className="text-sm font-semibold text-foreground">标的与投资逻辑</h3>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
-          <Input label="股票代码" value={form.symbol} onChange={(event) => onFormChange({ symbol: event.target.value })} disabled={Boolean(editingPlan)} />
-          <Input label="股票名称" value={form.name} onChange={(event) => onFormChange({ name: event.target.value })} />
+          <Input label="标的代码" value={form.symbol} onChange={(event) => onFormChange({ symbol: event.target.value })} disabled={Boolean(editingPlan)} />
+          <Input label="标的名称" value={form.name} onChange={(event) => onFormChange({ name: event.target.value })} />
           <Select label="市场" value={form.market} onChange={(value) => onFormChange({ market: value as PlanForm['market'] })} options={MARKET_OPTIONS} disabled={Boolean(editingPlan)} />
           <Select
             label="策略类型"

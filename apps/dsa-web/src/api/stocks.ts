@@ -14,7 +14,8 @@ export type ExtractFromImageResponse = {
   rawText?: string;
 };
 
-export type RankingMetric = 'change_pct' | 'amount' | 'volume';
+export type RankingMetric = 'change_pct' | 'amount' | 'volume' | 'drawdown_250d_pct'
+  | 'return_20d_pct' | 'return_60d_pct' | 'return_250d_pct';
 export type RankingDirection = 'asc' | 'desc';
 export type RankingStatus = 'ok' | 'partial' | 'stale' | 'unsupported' | 'unavailable';
 
@@ -29,6 +30,14 @@ export type StockRankingItem = {
   volume?: number | null;
   source?: string | null;
   updatedAt?: string | null;
+  assetType?: 'stock' | 'etf';
+  category?: string | null;
+  benchmarkCode?: string | null;
+  benchmarkName?: string | null;
+  drawdown250dPct?: number | null;
+  return20dPct?: number | null;
+  return60dPct?: number | null;
+  return250dPct?: number | null;
 };
 
 export type StockRankingsResponse = {
@@ -45,6 +54,8 @@ export type StockRankingsParams = {
   metric?: RankingMetric;
   direction?: RankingDirection;
   limit?: number;
+  assetType?: 'stock' | 'etf';
+  category?: string;
 };
 
 export type KLineData = {
@@ -125,7 +136,18 @@ export const stocksApi = {
   async getRankings(params: StockRankingsParams, signal?: AbortSignal): Promise<StockRankingsResponse> {
     const response = await apiClient.get<Record<string, unknown>>(
       '/api/v1/stocks/rankings',
-      { params, signal }
+      {
+        params: {
+          market: params.market,
+          industry: params.industry,
+          metric: params.metric,
+          direction: params.direction,
+          limit: params.limit,
+          asset_type: params.assetType,
+          category: params.category,
+        },
+        signal,
+      }
     );
     return toCamelCase<StockRankingsResponse>(response.data);
   },

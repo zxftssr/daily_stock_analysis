@@ -136,6 +136,21 @@ const index: StockIndexItem[] = [
     industry: '互联网服务',
     industrySource: 'override',
   },
+  {
+    canonicalCode: '510300.SH',
+    displayCode: '510300',
+    nameZh: '华泰柏瑞沪深300ETF',
+    pinyinFull: 'huataibairuihushen300ETF',
+    pinyinAbbr: 'htbrhs300ETF',
+    aliases: ['300ETF'],
+    market: 'CN',
+    assetType: 'etf',
+    active: true,
+    popularity: 80,
+    etfCategory: 'broad_market',
+    benchmarkCode: '000300.SH',
+    benchmarkName: '沪深300',
+  },
 ];
 
 const createDiscoverStock = (idx: number): StockIndexItem => {
@@ -252,6 +267,62 @@ describe('DiscoverPage', () => {
     expect(screen.getByTestId('discover-compact-metrics')).toHaveTextContent('当前结果');
     expect(screen.getByTestId('discover-compact-metrics')).toHaveTextContent('行业覆盖率');
     expect(screen.getByTestId('discover-stock-table-scroll')).toHaveAttribute('data-slot', 'data-table');
+  });
+
+  it('switches to broad ETF discovery and opens a prefilled crash plan', async () => {
+    vi.mocked(stocksApi.getRankings).mockImplementation(async (params) => ({
+      status: 'ok',
+      source: 'mock-etf',
+      updatedAt: '2026-08-26T00:00:00+00:00',
+      items: params.assetType === 'etf' ? [{
+        code: '510300.SH',
+        name: '华泰柏瑞沪深300ETF',
+        market: 'CN',
+        assetType: 'etf',
+        category: 'broad_market',
+        benchmarkCode: '000300.SH',
+        benchmarkName: '沪深300',
+        price: 4.2,
+        changePct: -1.2,
+        amount: 2_000_000_000,
+        volume: 100_000_000,
+        drawdown250dPct: 18.5,
+        return20dPct: -6.2,
+        return60dPct: -10.1,
+        return250dPct: -8.4,
+      }] : [],
+    }));
+
+    render(
+      <MemoryRouter>
+        <DiscoverPage />
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: '宽基 ETF' }));
+
+    await waitFor(() => {
+      expect(stocksApi.getRankings).toHaveBeenCalledWith(expect.objectContaining({
+        market: 'CN',
+        assetType: 'etf',
+        metric: 'drawdown_250d_pct',
+        direction: 'desc',
+      }));
+    });
+    expect(screen.getByRole('heading', { name: '宽基 ETF 精选池' })).toBeInTheDocument();
+    expect(screen.getAllByText('沪深300').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('button', { name: '成交量' }));
+    await waitFor(() => {
+      expect(stocksApi.getRankings).toHaveBeenCalledWith(expect.objectContaining({
+        assetType: 'etf',
+        metric: 'volume',
+        direction: 'desc',
+      }));
+    });
+    expect(screen.getAllByText('成交量')).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: '为 华泰柏瑞沪深300ETF 制定计划' }));
+    expect(mockNavigate).toHaveBeenCalledWith(
+      '/plans?symbol=510300&name=%E5%8D%8E%E6%B3%B0%E6%9F%8F%E7%91%9E%E6%B2%AA%E6%B7%B1300ETF&market=CN&strategyType=index_crash&benchmarkSymbol=510300',
+    );
   });
 
   it('distinguishes unavailable rankings from empty ranking results', async () => {

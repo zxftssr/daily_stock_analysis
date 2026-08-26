@@ -122,9 +122,25 @@ describe('InvestmentPlansPage', () => {
     );
 
     expect(await screen.findByRole('dialog', { name: '制定策略计划' })).toBeInTheDocument();
-    expect(screen.getByLabelText('股票代码')).toHaveValue('HK00700');
-    expect(screen.getByLabelText('股票名称')).toHaveValue('腾讯控股');
+    expect(screen.getByLabelText('标的代码')).toHaveValue('HK00700');
+    expect(screen.getByLabelText('标的名称')).toHaveValue('腾讯控股');
     expect(screen.getByLabelText('市场')).toHaveValue('hk');
+  });
+
+  it('prefills the index crash template from ETF discovery', async () => {
+    render(
+      <MemoryRouter initialEntries={['/plans?symbol=510300&name=华泰柏瑞沪深300ETF&market=CN&strategyType=index_crash&benchmarkSymbol=510300']}>
+        <InvestmentPlansPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('dialog', { name: '制定策略计划' })).toBeInTheDocument();
+    expect(screen.getByLabelText('标的代码')).toHaveValue('510300');
+    expect(screen.getByLabelText('标的名称')).toHaveValue('华泰柏瑞沪深300ETF');
+    expect(screen.getByLabelText('策略类型')).toHaveValue('index_crash');
+    expect(screen.getByLabelText('对标指数')).toHaveValue('510300');
+    expect(screen.getAllByLabelText('检查指标')[0]).toHaveValue('benchmark_drawdown_250d_pct');
+    expect(screen.getAllByLabelText('回撤阈值 %')[0]).toHaveValue(20);
   });
 
   it('applies strategy-specific scaffolding when a template is selected', async () => {
@@ -213,8 +229,8 @@ describe('InvestmentPlansPage', () => {
     await screen.findByText('还没有策略计划');
     fireEvent.click(screen.getAllByRole('button', { name: /制定计划/ })[0]);
 
-    fireEvent.change(screen.getByLabelText('股票代码'), { target: { value: '600519' } });
-    fireEvent.change(screen.getByLabelText('股票名称'), { target: { value: '贵州茅台' } });
+    fireEvent.change(screen.getByLabelText('标的代码'), { target: { value: '600519' } });
+    fireEvent.change(screen.getByLabelText('标的名称'), { target: { value: '贵州茅台' } });
     fireEvent.change(screen.getByLabelText('为什么投资'), { target: { value: '行业龙头且现金流稳定' } });
     fireEvent.change(screen.getByLabelText('什么情况下认错'), { target: { value: '盈利能力持续恶化' } });
     fireEvent.change(screen.getByLabelText('价格阈值'), { target: { value: '1400' } });

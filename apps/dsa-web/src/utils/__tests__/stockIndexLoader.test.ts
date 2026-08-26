@@ -105,6 +105,7 @@ describe('stockIndexLoader', () => {
       const compressedData: StockIndexTuple[] = [
         ['600519.SH', '600519', '贵州茅台', 'guizhoumaotai', 'gzmt', ['茅台'], 'CN', 'stock', true, 100],
         ['000001.SZ', '000001', '平安银行', 'pinganyinxing', 'payh', ['平银'], 'CN', 'stock', true, 90, '银行', 'tushare'],
+        ['510300.SH', '510300', '沪深300ETF', 'hushen300ETF', 'hs300ETF', ['300ETF'], 'CN', 'etf', true, 80, undefined, undefined, 'broad_market', '000300.SH', '沪深300'],
       ];
 
       mockFetch.mockResolvedValueOnce({
@@ -116,12 +117,15 @@ describe('stockIndexLoader', () => {
 
       expect(result.loaded).toBe(true);
       expect(result.fallback).toBe(false);
-      expect(result.data).toHaveLength(2);
+      expect(result.data).toHaveLength(3);
       expect(result.data[0].canonicalCode).toBe('600519.SH');
       expect(result.data[0].nameZh).toBe('贵州茅台');
       expect(result.data[0].industry).toBeUndefined();
       expect(result.data[1].industry).toBe('银行');
       expect(result.data[1].industrySource).toBe('tushare');
+      expect(result.data[2].etfCategory).toBe('broad_market');
+      expect(result.data[2].benchmarkCode).toBe('000300.SH');
+      expect(result.data[2].benchmarkName).toBe('沪深300');
     });
 
     test('returns fallback mode on network error', async () => {
@@ -208,6 +212,9 @@ describe('stockIndexLoader', () => {
         'stock',
         true,
         100,
+        undefined,
+        undefined,
+        undefined,
         undefined,
         undefined,
       ]);

@@ -28,6 +28,7 @@ from generate_index_from_csv import (
     load_popularity_scores,
     load_tushare_data,
     load_akshare_data,
+    load_broad_etf_pool,
 )
 
 
@@ -321,6 +322,9 @@ class TestOutputFormat:
         assert item[9] == 100              # popularity
         assert item[10] is None            # industry
         assert item[11] is None            # industrySource
+        assert item[12] is None            # etfCategory
+        assert item[13] is None            # benchmarkCode
+        assert item[14] is None            # benchmarkName
 
     def test_compress_index_field_count(self):
         """测试压缩格式的字段数量"""
@@ -338,7 +342,32 @@ class TestOutputFormat:
         }]
 
         compressed = compress_index(index)
-        assert len(compressed[0]) == 12  # 12个字段
+        assert len(compressed[0]) == 15  # 15个字段
+
+    def test_load_broad_etf_pool_builds_extended_index_entries(self, tmp_path):
+        (tmp_path / "cn_broad_etf_pool.csv").write_text(
+            "code,name,market,asset_type,category,benchmark_code,benchmark_name,active,priority,aliases\n"
+            "510300,沪深300ETF,CN,etf,broad_market,000300.SH,沪深300,true,20,300ETF\n",
+            encoding="utf-8",
+        )
+
+        entries = load_broad_etf_pool(tmp_path)
+
+        assert entries[0]["canonicalCode"] == "510300.SH"
+        assert entries[0]["assetType"] == "etf"
+        assert entries[0]["etfCategory"] == "broad_market"
+        assert entries[0]["benchmarkCode"] == "000300.SH"
+        assert entries[0]["benchmarkName"] == "沪深300"
+
+    def test_project_broad_etf_pool_contains_liquid_core_indexes(self):
+        entries = load_broad_etf_pool(Path(__file__).parent.parent / "data")
+
+        assert len(entries) == 20
+        assert len({entry["canonicalCode"] for entry in entries}) == 20
+        assert {
+            "沪深300", "中证A500", "中证500", "中证1000", "中证2000",
+            "上证50", "深证100", "创业板指", "创业板50", "科创50", "科创100",
+        }.issubset({entry["benchmarkName"] for entry in entries})
 
     def test_json_serialization(self):
         """测试 JSON 序列化"""
@@ -483,7 +512,7 @@ class TestIntegration:
 
         # 验证字段数量
         for item in compressed:
-            assert len(item) == 12
+            assert len(item) == 15
 
     def test_market_distribution(self, tmp_path):
         """测试市场分布统计"""

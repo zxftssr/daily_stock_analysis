@@ -38,6 +38,12 @@ export interface StockIndexItem {
   industry?: string;
   /** Source of static industry label */
   industrySource?: IndustrySource;
+  /** Curated broad-market ETF category. */
+  etfCategory?: string;
+  /** Underlying benchmark index code. */
+  benchmarkCode?: string;
+  /** Underlying benchmark index name. */
+  benchmarkName?: string;
 }
 
 /**
@@ -76,6 +82,9 @@ export type StockIndexTuple = [
   number | undefined, // popularity
   (string | undefined)?, // industry
   (IndustrySource | undefined)?, // industrySource
+  (string | undefined)?, // etfCategory
+  (string | undefined)?, // benchmarkCode
+  (string | undefined)?, // benchmarkName
 ];
 
 /**

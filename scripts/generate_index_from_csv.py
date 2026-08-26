@@ -454,6 +454,41 @@ def apply_industry_overrides(index: List[Dict[str, Any]], data_dir: Path) -> Non
             item['industrySource'] = override[1]
 
 
+def load_broad_etf_pool(data_dir: Path) -> List[Dict[str, Any]]:
+    """Load the curated A-share broad-market ETF pool for the shared local index."""
+    pool_path = data_dir / 'cn_broad_etf_pool.csv'
+    if not pool_path.exists():
+        return []
+
+    entries: List[Dict[str, Any]] = []
+    with open(pool_path, 'r', encoding='utf-8-sig') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            code = (row.get('code') or '').strip()
+            name = (row.get('name') or '').strip()
+            if len(code) != 6 or not code.isdigit() or not name:
+                continue
+            suffix = 'SH' if code.startswith(('51', '52', '56', '58')) else 'SZ'
+            aliases = [value.strip() for value in (row.get('aliases') or '').split(';') if value.strip()]
+            pinyin_full, pinyin_abbr = generate_pinyin(name)
+            entries.append({
+                'canonicalCode': f'{code}.{suffix}',
+                'displayCode': code,
+                'nameZh': name,
+                'pinyinFull': pinyin_full,
+                'pinyinAbbr': pinyin_abbr,
+                'aliases': aliases,
+                'market': (row.get('market') or 'CN').strip().upper(),
+                'assetType': 'etf',
+                'active': str(row.get('active') or 'true').strip().lower() not in {'0', 'false', 'no'},
+                'popularity': max(0, 100 - int(row.get('priority') or 100)),
+                'etfCategory': (row.get('category') or '').strip() or None,
+                'benchmarkCode': (row.get('benchmark_code') or '').strip() or None,
+                'benchmarkName': (row.get('benchmark_name') or '').strip() or None,
+            })
+    return entries
+
+
 def determine_market(ts_code: str) -> str:
     """
     Determine market based on code
@@ -657,6 +692,9 @@ def compress_index(index: List[Dict[str, Any]]) -> List[List]:
             item.get("popularity", 0),
             item.get("industry"),
             item.get("industrySource"),
+            item.get("etfCategory"),
+            item.get("benchmarkCode"),
+            item.get("benchmarkName"),
         ])
     return compressed
 
@@ -714,6 +752,7 @@ def main():
 
     index = build_stock_index(stocks, popularity_scores=popularity_scores)
     apply_industry_overrides(index, Path(__file__).parent.parent / 'data')
+    index.extend(load_broad_etf_pool(Path(__file__).parent.parent / 'data'))
 
     # 输出路径
     output_path = (

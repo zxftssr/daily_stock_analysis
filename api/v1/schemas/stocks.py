@@ -77,10 +77,10 @@ class KLineData(BaseModel):
 
 
 class StockRankingItem(BaseModel):
-    """股票榜单条目"""
+    """股票或 ETF 榜单条目"""
 
-    code: str = Field(..., description="股票代码")
-    name: str = Field(..., description="股票名称")
+    code: str = Field(..., description="标的代码")
+    name: str = Field(..., description="标的名称")
     market: Literal["CN", "BSE", "HK", "US"] = Field(..., description="市场")
     industry: Optional[str] = Field(None, description="行业，缺失表示未分类")
     price: Optional[float] = Field(None, description="最新价")
@@ -89,6 +89,14 @@ class StockRankingItem(BaseModel):
     volume: Optional[float] = Field(None, description="成交量")
     source: Optional[str] = Field(None, description="实际成功返回行情的数据源")
     updated_at: Optional[str] = Field(None, description="行情更新时间")
+    asset_type: Literal["stock", "etf"] = Field("stock", description="标的类型")
+    category: Optional[str] = Field(None, description="ETF 分类")
+    benchmark_code: Optional[str] = Field(None, description="ETF 跟踪指数代码")
+    benchmark_name: Optional[str] = Field(None, description="ETF 跟踪指数名称")
+    drawdown_250d_pct: Optional[float] = Field(None, description="距近 250 个交易日最高收盘价回撤 (%)")
+    return_20d_pct: Optional[float] = Field(None, description="近 20 个交易日收益率 (%)")
+    return_60d_pct: Optional[float] = Field(None, description="近 60 个交易日收益率 (%)")
+    return_250d_pct: Optional[float] = Field(None, description="近 250 个交易日收益率 (%)")
 
 
 class StockRankingsResponse(BaseModel):

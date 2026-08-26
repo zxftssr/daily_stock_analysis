@@ -17,6 +17,9 @@ export const STOCK_INDEX_FIELDS = [
   'popularity',
   'industry',
   'industrySource',
+  'etfCategory',
+  'benchmarkCode',
+  'benchmarkName',
 ] as const;
 
 /**
@@ -35,6 +38,9 @@ export const INDEX_FIELD = {
   POPULARITY: 9,
   INDUSTRY: 10,
   INDUSTRY_SOURCE: 11,
+  ETF_CATEGORY: 12,
+  BENCHMARK_CODE: 13,
+  BENCHMARK_NAME: 14,
 } as const;
 
 /**

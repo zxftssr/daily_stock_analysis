@@ -249,20 +249,26 @@ async def parse_import(request: Request) -> ExtractFromImageResponse:
     "/rankings",
     response_model=StockRankingsResponse,
     responses={
-        200: {"description": "股票行情榜单"},
+        200: {"description": "股票或 ETF 行情榜单"},
         422: {"description": "参数无效", "model": ErrorResponse},
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
-    summary="获取股票行情榜单",
+    summary="获取标的行情榜单",
     description=(
-        "按市场、行业、指标获取股票榜单。industry 不传表示全部；"
-        f"industry={UNCATEGORIZED_INDUSTRY} 表示未分类。"
+        "按市场、标的类型与指标获取榜单。股票可按 industry 过滤，"
+        "宽基 ETF 可按 category 过滤；"
+        f"industry={UNCATEGORIZED_INDUSTRY} 表示未分类股票。"
     ),
 )
 def get_stock_rankings(
     market: Literal["CN", "BSE", "HK", "US"] = Query(..., description="市场"),
     industry: Optional[str] = Query(None, description="行业，未分类使用 __uncategorized__"),
-    metric: Literal["change_pct", "amount", "volume"] = Query("change_pct", description="排序指标"),
+    asset_type: Literal["stock", "etf"] = Query("stock", description="标的类型"),
+    category: Optional[str] = Query(None, description="ETF 分类"),
+    metric: Literal[
+        "change_pct", "amount", "volume", "drawdown_250d_pct",
+        "return_20d_pct", "return_60d_pct", "return_250d_pct",
+    ] = Query("change_pct", description="排序指标"),
     direction: Literal["desc", "asc"] = Query("desc", description="排序方向"),
     limit: int = Query(20, ge=1, le=100, description="返回数量"),
 ) -> StockRankingsResponse:
@@ -273,6 +279,8 @@ def get_stock_rankings(
             metric=metric,
             direction=direction,
             limit=limit,
+            asset_type=asset_type,
+            category=category,
         )
         return StockRankingsResponse(**payload)
     except ValueError as exc:
@@ -281,10 +289,10 @@ def get_stock_rankings(
             detail={"error": "invalid_params", "message": str(exc)},
         )
     except Exception as exc:
-        logger.error("[股票榜单] 获取榜单失败: %s", exc, exc_info=True)
+        logger.error("[标的榜单] 获取榜单失败: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail={"error": "internal_error", "message": "获取股票榜单失败"},
+            detail={"error": "internal_error", "message": "获取标的榜单失败"},
         )
 
 

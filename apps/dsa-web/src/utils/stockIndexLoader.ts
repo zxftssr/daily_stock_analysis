@@ -81,6 +81,9 @@ function unpackTuples(tuples: StockIndexTuple[]): StockIndexItem[] {
     popularity: tuple[INDEX_FIELD.POPULARITY],
     industry: tuple[INDEX_FIELD.INDUSTRY],
     industrySource: normalizeIndustrySource(tuple[INDEX_FIELD.INDUSTRY_SOURCE]),
+    etfCategory: tuple[INDEX_FIELD.ETF_CATEGORY],
+    benchmarkCode: tuple[INDEX_FIELD.BENCHMARK_CODE],
+    benchmarkName: tuple[INDEX_FIELD.BENCHMARK_NAME],
   }));
 }
 
@@ -120,6 +123,9 @@ export function compressIndex(items: StockIndexItem[]): StockIndexTuple[] {
     item.popularity,
     item.industry,
     item.industrySource,
+    item.etfCategory,
+    item.benchmarkCode,
+    item.benchmarkName,
   ]);
 }
 

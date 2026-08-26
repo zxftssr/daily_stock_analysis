@@ -109,6 +109,7 @@ class TestStockIndexLoader(unittest.TestCase):
                     [
                         ["000001.SZ", "000001", "平安银行", "pinganyinhang", "payh", [], "CN", "stock", True, 100],
                         ["832566.BJ", "832566", "梓橦宫", "zitonggong", "ztg", [], "BSE", "stock", True, 100, "医药商业", "tushare"],
+                        ["510300.SH", "510300", "沪深300ETF", "hushen300ETF", "hs300ETF", [], "CN", "etf", True, 80, None, None, "broad_market", "000300.SH", "沪深300"],
                         {
                             "canonicalCode": "AAPL",
                             "displayCode": "AAPL",
@@ -131,12 +132,15 @@ class TestStockIndexLoader(unittest.TestCase):
                  patch.object(stock_index_loader, "get_stock_industry_overrides_path", return_value=missing_override_path):
                 entries = stock_index_loader.load_stock_index_entries()
 
-            self.assertEqual([entry.canonical_code for entry in entries], ["000001.SZ", "832566.BJ", "AAPL"])
+            self.assertEqual([entry.canonical_code for entry in entries], ["000001.SZ", "832566.BJ", "510300.SH", "AAPL"])
             self.assertIsNone(entries[0].industry)
             self.assertEqual(entries[1].industry, "医药商业")
             self.assertEqual(entries[1].industry_source, "tushare")
-            self.assertEqual(entries[2].industry, "消费电子")
-            self.assertEqual(entries[2].industry_source, "override")
+            self.assertEqual(entries[2].etf_category, "broad_market")
+            self.assertEqual(entries[2].benchmark_code, "000300.SH")
+            self.assertEqual(entries[2].benchmark_name, "沪深300")
+            self.assertEqual(entries[3].industry, "消费电子")
+            self.assertEqual(entries[3].industry_source, "override")
 
     def test_load_stock_index_entries_applies_industry_overrides(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -9,6 +9,7 @@ import {
   Play,
   Search,
   Star,
+  Target,
   TrendingDown,
   TrendingUp,
 } from 'lucide-react';
@@ -34,6 +35,7 @@ const UNCATEGORIZED_INDUSTRY = '__uncategorized__';
 const STOCK_PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 const DEFAULT_STOCK_PAGE_SIZE = 50;
 type DiscoverMarket = Extract<Market, 'CN' | 'BSE' | 'HK' | 'US'>;
+type DiscoverAssetType = 'stock' | 'etf';
 
 const MARKET_OPTIONS: Array<{ value: DiscoverMarket; label: string }> = [
   { value: 'CN', label: '沪深 A 股' },
@@ -42,7 +44,7 @@ const MARKET_OPTIONS: Array<{ value: DiscoverMarket; label: string }> = [
   { value: 'US', label: '美股' },
 ];
 
-const RANKING_TABS: Array<{
+const STOCK_RANKING_TABS: Array<{
   key: string;
   label: string;
   metric: RankingMetric;
@@ -54,6 +56,28 @@ const RANKING_TABS: Array<{
   { key: 'amount', label: '成交额', metric: 'amount', direction: 'desc', icon: BarChart3 },
   { key: 'volume', label: '成交量', metric: 'volume', direction: 'desc', icon: LineChart },
 ];
+
+const ETF_RANKING_TABS: typeof STOCK_RANKING_TABS = [
+  { key: 'drawdown', label: '250日回撤', metric: 'drawdown_250d_pct', direction: 'desc', icon: TrendingDown },
+  { key: 'return20', label: '20日', metric: 'return_20d_pct', direction: 'asc', icon: LineChart },
+  { key: 'return60', label: '60日', metric: 'return_60d_pct', direction: 'asc', icon: LineChart },
+  { key: 'return250', label: '250日', metric: 'return_250d_pct', direction: 'asc', icon: BarChart3 },
+  { key: 'amount', label: '成交额', metric: 'amount', direction: 'desc', icon: BarChart3 },
+  { key: 'volume', label: '成交量', metric: 'volume', direction: 'desc', icon: LineChart },
+];
+
+const ETF_CATEGORY_LABELS: Record<string, string> = {
+  broad_market: '全市场核心',
+  large_cap: '大盘宽基',
+  mid_cap: '中盘宽基',
+  small_cap: '小盘宽基',
+  growth: '成长宽基',
+  innovation: '创新宽基',
+};
+
+const etfCategoryLabel = (value?: string | null) => (
+  value ? ETF_CATEGORY_LABELS[value] ?? value : '宽基 ETF'
+);
 
 const STATUS_META: Record<RankingStatus, { label: string; variant: 'default' | 'success' | 'warning' | 'danger' | 'info' }> = {
   ok: { label: '实时', variant: 'success' },
@@ -86,6 +110,11 @@ const formatPct = (value?: number | null) => {
   return `${value > 0 ? '+' : ''}${formatNumber(value, { maximumFractionDigits: 2 })}%`;
 };
 
+const formatDrawdown = (value?: number | null) => {
+  if (value === undefined || value === null || Number.isNaN(value)) return '-';
+  return `-${formatNumber(Math.abs(value), { maximumFractionDigits: 2 })}%`;
+};
+
 const getErrorMessage = (error: unknown, fallback: string) => {
   if (error instanceof Error && error.message) return error.message;
   return fallback;
@@ -101,6 +130,7 @@ const getChangeClass = (value?: number | null) => {
 const DiscoverPage: React.FC = () => {
   const navigate = useNavigate();
   const { index, loading, error, fallback } = useStockIndex();
+  const [assetType, setAssetType] = useState<DiscoverAssetType>('stock');
   const [market, setMarket] = useState<DiscoverMarket>('CN');
   const [keyword, setKeyword] = useState('');
   const [industry, setIndustry] = useState('');
@@ -119,12 +149,13 @@ const DiscoverPage: React.FC = () => {
   const [watchlistOnly, setWatchlistOnly] = useState(false);
   const watchlist = useWatchlistConfig({ index });
 
-  const activeRanking = RANKING_TABS.find((tab) => tab.key === rankingKey) ?? RANKING_TABS[0];
+  const rankingTabs = assetType === 'etf' ? ETF_RANKING_TABS : STOCK_RANKING_TABS;
+  const activeRanking = rankingTabs.find((tab) => tab.key === rankingKey) ?? rankingTabs[0];
   const watchlistFilterDisabled = watchlist.loading || watchlist.saving || (!watchlist.hasConfig && !watchlistOnly);
 
   const marketStocks = useMemo(
-    () => index.filter((item) => item.active && item.assetType === 'stock' && item.market === market),
-    [index, market],
+    () => index.filter((item) => item.active && item.assetType === assetType && item.market === market),
+    [assetType, index, market],
   );
 
   const keywordFilteredStocks = useMemo(() => {
@@ -141,8 +172,9 @@ const DiscoverPage: React.FC = () => {
     const counts = new Map<string, number>();
     let uncategorized = 0;
     for (const item of keywordFilteredStocks) {
-      if (item.industry) {
-        counts.set(item.industry, (counts.get(item.industry) ?? 0) + 1);
+      const classification = assetType === 'etf' ? item.etfCategory : item.industry;
+      if (classification) {
+        counts.set(classification, (counts.get(classification) ?? 0) + 1);
       } else {
         uncategorized += 1;
       }
@@ -150,10 +182,13 @@ const DiscoverPage: React.FC = () => {
     const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-CN'));
     return [
       { value: '', label: `全部 (${keywordFilteredStocks.length})` },
-      ...sorted.map(([value, count]) => ({ value, label: `${value} (${count})` })),
+      ...sorted.map(([value, count]) => ({
+        value,
+        label: `${assetType === 'etf' ? etfCategoryLabel(value) : value} (${count})`,
+      })),
       ...(uncategorized > 0 ? [{ value: UNCATEGORIZED_INDUSTRY, label: `未分类 (${uncategorized})` }] : []),
     ];
-  }, [keywordFilteredStocks]);
+  }, [assetType, keywordFilteredStocks]);
 
   useEffect(() => {
     if (!industryOptions.some((option) => option.value === industry)) {
@@ -164,10 +199,12 @@ const DiscoverPage: React.FC = () => {
   const filteredStocks = useMemo(() => {
     const industryFiltered = (() => {
       if (industry === UNCATEGORIZED_INDUSTRY) {
-        return keywordFilteredStocks.filter((item) => !item.industry);
+        return keywordFilteredStocks.filter((item) => !(assetType === 'etf' ? item.etfCategory : item.industry));
       }
       if (industry) {
-        return keywordFilteredStocks.filter((item) => item.industry === industry);
+        return keywordFilteredStocks.filter((item) => (
+          assetType === 'etf' ? item.etfCategory === industry : item.industry === industry
+        ));
       }
       return keywordFilteredStocks;
     })();
@@ -176,11 +213,11 @@ const DiscoverPage: React.FC = () => {
       return industryFiltered.filter((item) => watchlist.isWatchlisted(item.canonicalCode, item.market));
     }
     return industryFiltered;
-  }, [industry, keywordFilteredStocks, watchlist, watchlistOnly]);
+  }, [assetType, industry, keywordFilteredStocks, watchlist, watchlistOnly]);
 
   useEffect(() => {
     setStockPage(1);
-  }, [industry, keyword, market, watchlistOnly]);
+  }, [assetType, industry, keyword, market, watchlistOnly]);
 
   const handleToggleWatchlist = useCallback(async (stockCode: string, stockName: string, stockMarket?: Market | null) => {
     setActionNotice(null);
@@ -189,13 +226,15 @@ const DiscoverPage: React.FC = () => {
 
   const coverage = useMemo(() => {
     const denominator = keywordFilteredStocks.length;
-    const numerator = keywordFilteredStocks.filter((item) => Boolean(item.industry)).length;
+    const numerator = keywordFilteredStocks.filter((item) => Boolean(
+      assetType === 'etf' ? item.benchmarkName : item.industry
+    )).length;
     return {
       numerator,
       denominator,
       percent: denominator > 0 ? Math.round((numerator / denominator) * 100) : 0,
     };
-  }, [keywordFilteredStocks]);
+  }, [assetType, keywordFilteredStocks]);
 
   useEffect(() => {
     let cancelled = false;
@@ -205,7 +244,9 @@ const DiscoverPage: React.FC = () => {
 
     stocksApi.getRankings({
       market,
-      industry: industry || undefined,
+      industry: assetType === 'stock' ? industry || undefined : undefined,
+      category: assetType === 'etf' ? industry || undefined : undefined,
+      assetType,
       metric: activeRanking.metric,
       direction: activeRanking.direction,
       limit: 20,
@@ -231,7 +272,15 @@ const DiscoverPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [activeRanking.direction, activeRanking.metric, industry, market]);
+  }, [activeRanking.direction, activeRanking.metric, assetType, industry, market]);
+
+  const handleAssetTypeChange = useCallback((next: DiscoverAssetType) => {
+    setAssetType(next);
+    setIndustry('');
+    setKeyword('');
+    setRankingKey(next === 'etf' ? 'drawdown' : 'gainers');
+    if (next === 'etf') setMarket('CN');
+  }, []);
 
   const handleAnalyze = useCallback(async (stockCode: string, stockName: string) => {
     setAnalyzingCode(stockCode);
@@ -277,6 +326,17 @@ const DiscoverPage: React.FC = () => {
     setKLineStock({ code: stockCode, name: stockName });
   }, []);
 
+  const handleCreatePlan = useCallback((item: Pick<StockRankingItem, 'code' | 'name' | 'benchmarkCode'>) => {
+    const params = new URLSearchParams({
+      symbol: item.code.split('.')[0],
+      name: item.name,
+      market: 'CN',
+      strategyType: 'index_crash',
+      benchmarkSymbol: item.code.split('.')[0],
+    });
+    navigate(`/plans?${params.toString()}`);
+  }, [navigate]);
+
   const handleStockPageSizeChange = useCallback((value: string) => {
     const parsed = Number(value);
     const nextSize = STOCK_PAGE_SIZE_OPTIONS.find((option) => option === parsed) ?? DEFAULT_STOCK_PAGE_SIZE;
@@ -307,7 +367,28 @@ const DiscoverPage: React.FC = () => {
           <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
               <span className="text-xs font-medium text-muted-foreground">市场研究</span>
-              <h1 className="text-2xl font-semibold tracking-tight text-foreground">股票发现</h1>
+              <h1 className="text-2xl font-semibold tracking-tight text-foreground">标的发现</h1>
+              <div className="inline-flex rounded-md border border-border bg-background p-0.5" aria-label="标的类型">
+                {([
+                  ['stock', '股票'],
+                  ['etf', '宽基 ETF'],
+                ] as const).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    aria-pressed={assetType === value}
+                    onClick={() => handleAssetTypeChange(value)}
+                    className={cn(
+                      'rounded px-2.5 py-1 text-xs font-medium transition-colors',
+                      assetType === value
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <button
@@ -327,9 +408,9 @@ const DiscoverPage: React.FC = () => {
                 <Star className="h-3.5 w-3.5" fill={watchlistOnly ? 'currentColor' : 'none'} />
                 只看自选
               </button>
-              <Badge variant="info">{MARKET_OPTIONS.find((option) => option.value === market)?.label}</Badge>
+              <Badge variant="info">{assetType === 'etf' ? 'A 股宽基精选池' : MARKET_OPTIONS.find((option) => option.value === market)?.label}</Badge>
               <Badge variant={coverage.percent >= 60 ? 'success' : coverage.percent > 0 ? 'warning' : 'default'}>
-                行业覆盖 {coverage.numerator}/{coverage.denominator}
+                {assetType === 'etf' ? '指数信息' : '行业覆盖'} {coverage.numerator}/{coverage.denominator}
               </Badge>
             </div>
           </div>
@@ -343,6 +424,7 @@ const DiscoverPage: React.FC = () => {
               value={market}
               onChange={(value) => setMarket(value as DiscoverMarket)}
               options={MARKET_OPTIONS}
+              disabled={assetType === 'etf'}
             />
             <div data-testid="discover-search-field" className="w-full 2xl:max-w-[720px]">
               <Input
@@ -355,16 +437,16 @@ const DiscoverPage: React.FC = () => {
               />
             </div>
             <Select
-              label="行业"
+              label={assetType === 'etf' ? '宽基类型' : '行业'}
               value={industry}
               onChange={setIndustry}
               options={industryOptions}
               disabled={loading || industryOptions.length <= 1}
             />
             <div data-testid="discover-compact-metrics" className="grid grid-cols-3 gap-2 md:col-span-3 xl:col-span-1">
-              <CompactMetric label="当前市场" value={formatNumber(marketStocks.length)} />
+              <CompactMetric label={assetType === 'etf' ? '精选 ETF' : '当前市场'} value={formatNumber(marketStocks.length)} />
               <CompactMetric label="当前结果" value={formatNumber(filteredStocks.length)} />
-              <CompactMetric label="行业覆盖率" value={`${coverage.percent}%`} />
+              <CompactMetric label={assetType === 'etf' ? '指数信息率' : '行业覆盖率'} value={`${coverage.percent}%`} />
             </div>
           </div>
         </div>
@@ -391,7 +473,7 @@ const DiscoverPage: React.FC = () => {
       <section className="rounded-lg border border-border bg-card p-4 shadow-sm">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-wrap items-center gap-2">
-            {RANKING_TABS.map(({ key, label, icon: Icon }) => (
+            {rankingTabs.map(({ key, label, icon: Icon }) => (
               <button
                 key={key}
                 type="button"
@@ -411,6 +493,7 @@ const DiscoverPage: React.FC = () => {
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <Badge variant={statusMeta.variant}>{statusMeta.label}</Badge>
             {market === 'US' ? <Badge variant="info">核心池</Badge> : null}
+            {assetType === 'etf' ? <Badge variant="info">本地精选 · 动态行情</Badge> : null}
             {rankingUpdatedAt ? <span>{new Date(rankingUpdatedAt).toLocaleString('zh-CN')}</span> : null}
           </div>
         </div>
@@ -432,10 +515,12 @@ const DiscoverPage: React.FC = () => {
                 key={`${item.code}-${index}`}
                 item={item}
                 rank={index + 1}
+                rankingMetric={activeRanking.metric}
                 onAnalyze={handleAnalyze}
                 onAsk={handleAsk}
                 onOpenKLine={handleOpenKLine}
                 onToggleWatchlist={handleToggleWatchlist}
+                onCreatePlan={assetType === 'etf' ? handleCreatePlan : undefined}
                 isWatchlisted={watchlist.isWatchlisted(item.code, item.market)}
                 watchlistDisabled={watchlist.disabled}
                 watchlistSaving={watchlist.isSavingStock(item.code, item.market)}
@@ -457,7 +542,7 @@ const DiscoverPage: React.FC = () => {
       <section className="rounded-lg border border-border bg-card p-4 shadow-sm">
         <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h2 className="text-base font-semibold text-foreground">可关注股票</h2>
+            <h2 className="text-base font-semibold text-foreground">{assetType === 'etf' ? '宽基 ETF 精选池' : '可关注股票'}</h2>
             <span className="mt-1 block text-xs text-muted-foreground">
               {filteredStocks.length > 0
                 ? `显示 ${visibleStart}-${visibleEnd} / ${filteredStocks.length}`
@@ -482,15 +567,15 @@ const DiscoverPage: React.FC = () => {
           </div>
         ) : visibleStocks.length > 0 ? (
           <div className="overflow-hidden rounded-lg border border-border bg-background">
-            <div data-testid="discover-stock-table-scroll" data-slot="data-table" role="region" aria-label="可关注股票列表" className="max-h-[520px] overflow-auto">
-              <table className="min-w-[860px] w-full text-left text-sm">
+            <div data-testid="discover-stock-table-scroll" data-slot="data-table" role="region" aria-label={assetType === 'etf' ? '宽基 ETF 列表' : '可关注股票列表'} className="max-h-[520px] overflow-auto">
+              <table className="min-w-[940px] w-full text-left text-sm">
                 <thead className="sticky top-0 z-10 border-b border-border bg-muted/90 text-xs text-muted-foreground backdrop-blur">
                   <tr>
                     <th className="px-3 py-2 font-medium">代码</th>
                     <th className="px-3 py-2 font-medium">名称</th>
                     <th className="px-3 py-2 font-medium">市场</th>
-                    <th className="px-3 py-2 font-medium">行业</th>
-                    <th className="w-[292px] px-3 py-2 text-right font-medium">操作</th>
+                    <th className="px-3 py-2 font-medium">{assetType === 'etf' ? '跟踪指数 / 类型' : '行业'}</th>
+                    <th className="w-[340px] px-3 py-2 text-right font-medium">操作</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -505,9 +590,16 @@ const DiscoverPage: React.FC = () => {
                         {MARKET_OPTIONS.find((option) => option.value === item.market)?.label ?? item.market}
                       </td>
                       <td className="px-3 py-3">
-                        <Badge variant={item.industry ? 'info' : 'default'}>
-                          {item.industry || '未分类'}
-                        </Badge>
+                        {assetType === 'etf' ? (
+                          <div>
+                            <div className="text-sm font-medium text-foreground">{item.benchmarkName || '指数待补充'}</div>
+                            <div className="mt-1 text-xs text-muted-foreground">{etfCategoryLabel(item.etfCategory)}</div>
+                          </div>
+                        ) : (
+                          <Badge variant={item.industry ? 'info' : 'default'}>
+                            {item.industry || '未分类'}
+                          </Badge>
+                        )}
                       </td>
                       <td className="px-3 py-3">
                         <div className="flex justify-end gap-1.5">
@@ -539,6 +631,23 @@ const DiscoverPage: React.FC = () => {
                             <Play className="h-4 w-4" />
                             分析
                           </Button>
+                          {assetType === 'etf' ? (
+                            <Tooltip content="制定大跌分批买入计划">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="w-9 px-0"
+                                aria-label={`从列表为 ${item.nameZh} 制定计划`}
+                                onClick={() => handleCreatePlan({
+                                  code: item.canonicalCode,
+                                  name: item.nameZh,
+                                  benchmarkCode: item.benchmarkCode,
+                                })}
+                              >
+                                <Target className="h-4 w-4" />
+                              </Button>
+                            </Tooltip>
+                          ) : null}
                           <Button
                             size="sm"
                             variant="ghost"
@@ -566,7 +675,7 @@ const DiscoverPage: React.FC = () => {
             ) : null}
           </div>
         ) : (
-          <EmptyState title="没有匹配股票" description="" icon={<Search className="h-6 w-6" />} />
+          <EmptyState title={assetType === 'etf' ? '没有匹配宽基 ETF' : '没有匹配股票'} description="" icon={<Search className="h-6 w-6" />} />
         )}
       </section>
 
@@ -630,11 +739,13 @@ const FloatingActionToast: React.FC<FloatingActionToastProps> = ({ notice }) => 
 type RankingTileProps = {
   item: StockRankingItem;
   rank: number;
+  rankingMetric: RankingMetric;
   analyzingCode: string | null;
   onAnalyze: (stockCode: string, stockName: string) => Promise<void>;
   onAsk: (stockCode: string, stockName: string) => void;
   onOpenKLine: (stockCode: string, stockName: string) => void;
   onToggleWatchlist: (stockCode: string, stockName: string, stockMarket: Market) => Promise<void>;
+  onCreatePlan?: (item: Pick<StockRankingItem, 'code' | 'name' | 'benchmarkCode'>) => void;
   isWatchlisted: boolean;
   watchlistDisabled: boolean;
   watchlistSaving: boolean;
@@ -643,11 +754,13 @@ type RankingTileProps = {
 const RankingTile: React.FC<RankingTileProps> = ({
   item,
   rank,
+  rankingMetric,
   analyzingCode,
   onAnalyze,
   onAsk,
   onOpenKLine,
   onToggleWatchlist,
+  onCreatePlan,
   isWatchlisted,
   watchlistDisabled,
   watchlistSaving,
@@ -668,12 +781,27 @@ const RankingTile: React.FC<RankingTileProps> = ({
       </div>
     </div>
     <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
-      <ValueCell label="价格" value={formatNumber(item.price, { maximumFractionDigits: 3 })} />
-      <ValueCell label="成交额" value={formatAmount(item.amount)} />
-      <ValueCell label="成交量" value={formatAmount(item.volume)} />
+      {item.assetType === 'etf' ? (
+        <>
+          <ValueCell label="250日回撤" value={formatDrawdown(item.drawdown250dPct)} />
+          <ValueCell label="20日收益" value={formatPct(item.return20dPct)} />
+          <ValueCell
+            label={rankingMetric === 'volume' ? '成交量' : '成交额'}
+            value={formatAmount(rankingMetric === 'volume' ? item.volume : item.amount)}
+          />
+        </>
+      ) : (
+        <>
+          <ValueCell label="价格" value={formatNumber(item.price, { maximumFractionDigits: 3 })} />
+          <ValueCell label="成交额" value={formatAmount(item.amount)} />
+          <ValueCell label="成交量" value={formatAmount(item.volume)} />
+        </>
+      )}
     </div>
     <div className="mt-3 flex items-center justify-between gap-2">
-      <Badge variant={item.industry ? 'info' : 'default'}>{item.industry || '未分类'}</Badge>
+      <Badge variant={item.assetType === 'etf' || item.industry ? 'info' : 'default'}>
+        {item.assetType === 'etf' ? `${item.benchmarkName || '宽基指数'} · ${etfCategoryLabel(item.category)}` : item.industry || '未分类'}
+      </Badge>
       <div className="flex gap-1.5">
         <WatchlistStarButton
           stockName={item.name}
@@ -711,6 +839,18 @@ const RankingTile: React.FC<RankingTileProps> = ({
         >
           <MessageSquareQuote className="h-3.5 w-3.5" />
         </Button>
+        {onCreatePlan ? (
+          <Tooltip content="制定大跌分批买入计划">
+            <Button
+              size="xsm"
+              variant="secondary"
+              onClick={() => onCreatePlan(item)}
+              aria-label={`为 ${item.name} 制定计划`}
+            >
+              <Target className="h-3.5 w-3.5" />
+            </Button>
+          </Tooltip>
+        ) : null}
       </div>
     </div>
   </div>

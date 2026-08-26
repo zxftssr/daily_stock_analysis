@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -15,7 +17,13 @@ from fastapi.testclient import TestClient
 import src.auth as auth
 from api.app import create_app
 from src.data.stock_index_loader import StockIndexEntry
-from src.services.stock_discovery_service import StockDiscoveryService, _BATCH_CACHE
+from src.services.stock_discovery_service import (
+    StockDiscoveryService,
+    _BATCH_CACHE,
+    _ETF_METRICS_CACHE,
+    _ETF_METRICS_INFLIGHT,
+)
+from src.services import stock_market_metrics
 
 
 def _entry(
@@ -24,28 +32,243 @@ def _entry(
     name: str,
     market: str,
     industry: str | None = None,
+    asset_type: str = "stock",
+    category: str | None = None,
+    benchmark_code: str | None = None,
+    benchmark_name: str | None = None,
 ) -> StockIndexEntry:
     return StockIndexEntry(
         canonical_code=canonical,
         display_code=display,
         name_zh=name,
         market=market,
-        asset_type="stock",
+        asset_type=asset_type,
         active=True,
         industry=industry,
         industry_source="test" if industry else None,
+        etf_category=category,
+        benchmark_code=benchmark_code,
+        benchmark_name=benchmark_name,
     )
+
+
+class _HistoryServiceStub:
+    def __init__(self, closes_by_code, *, stale=False, partial_cache=False):
+        self.closes_by_code = closes_by_code
+        self.stale = stale
+        self.partial_cache = partial_cache
+
+    def get_history_data(self, code, days=420):
+        return {
+            "stale": self.stale,
+            "partial_cache": self.partial_cache,
+            "as_of_date": "2099-01-01",
+            "data": [
+                {"date": f"2025-01-{(index % 28) + 1:02d}", "close": close}
+                for index, close in enumerate(self.closes_by_code.get(code, []))
+            ]
+        }
+
+
+class _BlockingHistoryService(_HistoryServiceStub):
+    def __init__(self, closes_by_code):
+        super().__init__(closes_by_code)
+        self.release = Event()
+        self.calls = 0
+
+    def get_history_data(self, code, days=420):
+        self.calls += 1
+        self.release.wait(timeout=2)
+        return super().get_history_data(code, days=days)
 
 
 class StockRankingsTestCase(unittest.TestCase):
     def setUp(self):
         _BATCH_CACHE.clear()
+        _ETF_METRICS_CACHE.clear()
+        _ETF_METRICS_INFLIGHT.clear()
         from data_provider import akshare_fetcher, efinance_fetcher
 
         efinance_fetcher._realtime_cache["data"] = None
         efinance_fetcher._realtime_cache["timestamp"] = 0
         akshare_fetcher._realtime_cache["data"] = None
         akshare_fetcher._realtime_cache["timestamp"] = 0
+        efinance_fetcher._etf_realtime_cache["data"] = None
+        efinance_fetcher._etf_realtime_cache["timestamp"] = 0
+        akshare_fetcher._etf_realtime_cache["data"] = None
+        akshare_fetcher._etf_realtime_cache["timestamp"] = 0
+
+    def test_etf_rankings_filter_category_and_sort_by_250d_drawdown(self):
+        entries = [
+            _entry(
+                "510300.SH", "510300", "沪深300ETF", "CN",
+                asset_type="etf", category="broad_market",
+                benchmark_code="000300.SH", benchmark_name="沪深300",
+            ),
+            _entry(
+                "510500.SH", "510500", "中证500ETF", "CN",
+                asset_type="etf", category="mid_cap",
+                benchmark_code="000905.SH", benchmark_name="中证500",
+            ),
+        ]
+        service = StockDiscoveryService(
+            index_entries=entries,
+            stock_service=_HistoryServiceStub({
+                "510300": [100.0] * 250 + [80.0],
+                "510500": [100.0] * 250 + [90.0],
+            }),
+        )
+        quotes = pd.DataFrame([
+            {"代码": "510300", "名称": "沪深300ETF", "最新价": 80.0, "涨跌幅": -2.0, "成交额": 3000, "成交量": 300},
+            {"代码": "510500", "名称": "中证500ETF", "最新价": 90.0, "涨跌幅": -1.0, "成交额": 2000, "成交量": 200},
+        ])
+
+        with patch.object(
+            service,
+            "_get_cn_etf_batch_quotes",
+            return_value=(quotes, "mock-etf", datetime(2026, 8, 26, tzinfo=timezone.utc), "ok"),
+        ):
+            payload = service.get_rankings(
+                market="CN", asset_type="etf", metric="drawdown_250d_pct", direction="desc"
+            )
+            filtered = service.get_rankings(
+                market="CN", asset_type="etf", category="mid_cap", metric="drawdown_250d_pct"
+            )
+
+        self.assertEqual([item["code"] for item in payload["items"]], ["510300.SH", "510500.SH"])
+        self.assertEqual(payload["items"][0]["drawdown_250d_pct"], 20.0)
+        self.assertEqual(payload["items"][0]["return_20d_pct"], -20.0)
+        self.assertEqual(payload["items"][0]["asset_type"], "etf")
+        self.assertEqual(payload["items"][0]["benchmark_name"], "沪深300")
+        self.assertEqual([item["code"] for item in filtered["items"]], ["510500.SH"])
+
+    def test_etf_rankings_reject_non_cn_market(self):
+        service = StockDiscoveryService(index_entries=[])
+        with self.assertRaisesRegex(ValueError, "currently supports CN only"):
+            service.get_rankings(market="HK", asset_type="etf")
+
+    def test_etf_rankings_mark_stale_history_metrics_as_partial(self):
+        entry = _entry(
+            "510300.SH", "510300", "沪深300ETF", "CN",
+            asset_type="etf", category="broad_market",
+            benchmark_code="000300.SH", benchmark_name="沪深300",
+        )
+        service = StockDiscoveryService(
+            index_entries=[entry],
+            stock_service=_HistoryServiceStub(
+                {"510300": [100.0] * 250 + [80.0]},
+                stale=True,
+            ),
+        )
+        quotes = pd.DataFrame([{
+            "代码": "510300", "名称": "沪深300ETF", "最新价": 80.0,
+            "涨跌幅": -2.0, "成交额": 3000, "成交量": 300,
+        }])
+        with patch.object(
+            service,
+            "_get_cn_etf_batch_quotes",
+            return_value=(quotes, "mock-etf", datetime(2026, 8, 26, tzinfo=timezone.utc), "ok"),
+        ):
+            payload = service.get_rankings(
+                market="CN", asset_type="etf", metric="drawdown_250d_pct", direction="desc"
+            )
+
+        self.assertEqual(payload["status"], "partial")
+        self.assertEqual(payload["items"], [])
+
+    def test_etf_realtime_rankings_skip_history_metrics(self):
+        entry = _entry(
+            "510300.SH", "510300", "沪深300ETF", "CN",
+            asset_type="etf", category="broad_market",
+        )
+        service = StockDiscoveryService(index_entries=[entry])
+        quotes = pd.DataFrame([{
+            "代码": "510300", "名称": "沪深300ETF", "最新价": 80.0,
+            "涨跌幅": -2.0, "成交额": 3000, "成交量": 300,
+        }])
+
+        with patch.object(
+            service,
+            "_get_cn_etf_batch_quotes",
+            return_value=(quotes, "mock-etf", datetime(2026, 8, 26, tzinfo=timezone.utc), "ok"),
+        ), patch.object(service, "_get_etf_metrics") as get_metrics:
+            payload = service.get_rankings(
+                market="CN", asset_type="etf", metric="volume", direction="desc"
+            )
+
+        get_metrics.assert_not_called()
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["items"][0]["volume"], 300)
+
+    def test_etf_metric_timeout_is_bounded_and_negative_cached(self):
+        entry = _entry(
+            "510300.SH", "510300", "沪深300ETF", "CN",
+            asset_type="etf", category="broad_market",
+        )
+        history = _BlockingHistoryService({"510300": [100.0] * 250 + [80.0]})
+        service = StockDiscoveryService(index_entries=[entry], stock_service=history)
+
+        try:
+            with patch(
+                "src.services.stock_discovery_service.ETF_METRICS_OVERALL_TIMEOUT_SECONDS",
+                0.01,
+            ):
+                first, first_unreliable = service._get_etf_metrics([entry])
+                second, second_unreliable = service._get_etf_metrics([entry])
+
+            self.assertEqual(history.calls, 1)
+            self.assertIn(entry.canonical_code, first_unreliable)
+            self.assertIn(entry.canonical_code, second_unreliable)
+            self.assertIsNone(first[entry.canonical_code]["drawdown_250d_pct"])
+            self.assertIsNone(second[entry.canonical_code]["drawdown_250d_pct"])
+        finally:
+            history.release.set()
+
+    def test_etf_metric_cache_is_revalidated_across_trading_date_boundary(self):
+        entry = _entry(
+            "510300.SH", "510300", "沪深300ETF", "CN",
+            asset_type="etf", category="broad_market",
+        )
+        history = _HistoryServiceStub({"510300": [100.0] * 250 + [80.0]})
+        history.get_history_data = Mock(wraps=history.get_history_data)
+        service = StockDiscoveryService(index_entries=[entry], stock_service=history)
+        _ETF_METRICS_CACHE[entry.canonical_code] = (
+            time.time(),
+            {
+                "drawdown_250d_pct": 10.0,
+                "return_20d_pct": 1.0,
+                "return_60d_pct": 2.0,
+                "return_250d_pct": 3.0,
+            },
+            True,
+            date(2026, 8, 25),
+        )
+
+        with patch(
+            "src.core.trading_calendar.get_effective_trading_date",
+            return_value=date(2026, 8, 26),
+        ):
+            metrics, unreliable = service._get_etf_metrics([entry])
+
+        self.assertEqual(history.get_history_data.call_count, 1)
+        self.assertNotIn(entry.canonical_code, unreliable)
+        self.assertEqual(metrics[entry.canonical_code]["drawdown_250d_pct"], 20.0)
+
+    def test_etf_batch_quotes_fall_back_to_akshare(self):
+        quotes = pd.DataFrame([{"代码": "510300", "最新价": 4.2}])
+        with patch.object(
+            stock_market_metrics,
+            "fetch_efinance_etf_batch_quotes",
+            side_effect=RuntimeError("efinance down"),
+        ), patch.object(
+            stock_market_metrics,
+            "fetch_akshare_etf_batch_quotes",
+            return_value=quotes,
+        ):
+            result = stock_market_metrics.fetch_cn_etf_batch_quotes()
+
+        self.assertEqual(result.source, "akshare_etf")
+        self.assertEqual(result.df.iloc[0]["代码"], "510300")
 
     def test_cn_batch_quotes_uses_efinance_timeout_adapter_before_fallback(self):
         service = StockDiscoveryService(index_entries=[])
@@ -76,6 +299,53 @@ class StockRankingsTestCase(unittest.TestCase):
         raw_ef_call.assert_not_called()
         fake_ak.stock_zh_a_spot_em.assert_not_called()
         circuit.record_success.assert_called_once_with("efinance")
+
+    def test_etf_batch_quotes_use_efinance_etf_snapshot_and_cache(self):
+        quotes = pd.DataFrame([
+            {"代码": "510300", "名称": "沪深300ETF", "最新价": 4.2},
+        ])
+        raw_ef_call = Mock(side_effect=AssertionError("raw efinance call should not be used"))
+        fake_ef = SimpleNamespace(stock=SimpleNamespace(get_realtime_quotes=raw_ef_call))
+        circuit = SimpleNamespace(
+            is_available=Mock(return_value=True),
+            record_success=Mock(),
+            record_failure=Mock(),
+        )
+
+        with patch.dict(sys.modules, {"efinance": fake_ef}), \
+             patch("data_provider.efinance_fetcher.get_realtime_circuit_breaker", return_value=circuit), \
+             patch("data_provider.efinance_fetcher.EfinanceFetcher._set_random_user_agent"), \
+             patch("data_provider.efinance_fetcher.EfinanceFetcher._enforce_rate_limit"), \
+             patch("data_provider.efinance_fetcher._ef_call_with_timeout", return_value=quotes) as call_with_timeout:
+            first = stock_market_metrics.fetch_efinance_etf_batch_quotes()
+            second = stock_market_metrics.fetch_efinance_etf_batch_quotes()
+
+        self.assertEqual(first.iloc[0]["代码"], "510300")
+        self.assertIs(second, first)
+        call_with_timeout.assert_called_once_with(raw_ef_call, ["ETF"])
+        circuit.record_success.assert_called_once_with("efinance_etf")
+
+    def test_empty_efinance_etf_snapshot_falls_back_to_akshare(self):
+        empty = pd.DataFrame()
+        quotes = pd.DataFrame([{"代码": "510300", "最新价": 4.2}])
+        fake_ef = SimpleNamespace(stock=SimpleNamespace(get_realtime_quotes=Mock()))
+        circuit = SimpleNamespace(
+            is_available=Mock(return_value=True),
+            record_success=Mock(),
+            record_failure=Mock(),
+        )
+        with patch.dict(sys.modules, {"efinance": fake_ef}), \
+             patch("data_provider.efinance_fetcher.get_realtime_circuit_breaker", return_value=circuit), \
+             patch("data_provider.efinance_fetcher.EfinanceFetcher._set_random_user_agent"), \
+             patch("data_provider.efinance_fetcher.EfinanceFetcher._enforce_rate_limit"), \
+             patch("data_provider.efinance_fetcher._ef_call_with_timeout", return_value=empty), \
+             patch.object(stock_market_metrics, "fetch_akshare_etf_batch_quotes", return_value=quotes) as fallback:
+            result = stock_market_metrics.fetch_cn_etf_batch_quotes()
+
+        self.assertEqual(result.source, "akshare_etf")
+        self.assertEqual(result.df.iloc[0]["代码"], "510300")
+        fallback.assert_called_once_with()
+        circuit.record_failure.assert_called_once()
 
     def test_rankings_sort_change_pct_asc_and_match_bse_codes(self):
         service = StockDiscoveryService(
@@ -329,6 +599,51 @@ class StockRankingsTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "unavailable")
         self.assertIn("没有可用缓存", response.json()["message"])
+
+    def test_rankings_route_forwards_etf_filters_and_extended_metrics(self):
+        auth._auth_enabled = None
+        app = create_app()
+        client = TestClient(app)
+        payload = {
+            "status": "ok",
+            "source": "mock-etf",
+            "updated_at": "2026-08-26T00:00:00+00:00",
+            "items": [{
+                "code": "510300.SH",
+                "name": "沪深300ETF",
+                "market": "CN",
+                "asset_type": "etf",
+                "category": "broad_market",
+                "benchmark_code": "000300.SH",
+                "benchmark_name": "沪深300",
+                "drawdown_250d_pct": 20.0,
+                "return_20d_pct": -4.0,
+                "return_60d_pct": -8.0,
+                "return_250d_pct": -12.0,
+            }],
+        }
+        with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
+             patch("src.auth.is_auth_enabled", return_value=False), \
+             patch(
+                 "api.v1.endpoints.stocks.StockDiscoveryService.get_rankings",
+                 return_value=payload,
+             ) as get_rankings:
+            response = client.get(
+                "/api/v1/stocks/rankings?market=CN&asset_type=etf&category=broad_market"
+                "&metric=drawdown_250d_pct&direction=desc"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["items"][0]["benchmark_name"], "沪深300")
+        get_rankings.assert_called_once_with(
+            market="CN",
+            industry=None,
+            metric="drawdown_250d_pct",
+            direction="desc",
+            limit=20,
+            asset_type="etf",
+            category="broad_market",
+        )
 
 
 if __name__ == "__main__":

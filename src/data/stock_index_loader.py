@@ -33,6 +33,9 @@ class StockIndexEntry:
     popularity: int | None = None
     industry: str | None = None
     industry_source: str | None = None
+    etf_category: str | None = None
+    benchmark_code: str | None = None
+    benchmark_name: str | None = None
 
 
 def get_stock_index_candidate_paths() -> tuple[Path, ...]:
@@ -128,6 +131,9 @@ def _parse_stock_index_item(item: Any) -> StockIndexEntry | None:
             popularity=_coerce_int(item[9]) if len(item) > 9 else None,
             industry=_clean_optional_text(item[10]) if len(item) > 10 else None,
             industry_source=_normalize_industry_source(item[11]) if len(item) > 11 else None,
+            etf_category=_clean_optional_text(item[12]) if len(item) > 12 else None,
+            benchmark_code=_clean_optional_text(item[13]) if len(item) > 13 else None,
+            benchmark_name=_clean_optional_text(item[14]) if len(item) > 14 else None,
         )
     elif isinstance(item, dict):
         canonical_code = _dict_value(item, "canonicalCode", "canonical_code", "code")
@@ -146,6 +152,9 @@ def _parse_stock_index_item(item: Any) -> StockIndexEntry | None:
             popularity=_coerce_int(_dict_value(item, "popularity")),
             industry=_clean_optional_text(_dict_value(item, "industry")),
             industry_source=_normalize_industry_source(_dict_value(item, "industrySource", "industry_source")),
+            etf_category=_clean_optional_text(_dict_value(item, "etfCategory", "etf_category")),
+            benchmark_code=_clean_optional_text(_dict_value(item, "benchmarkCode", "benchmark_code")),
+            benchmark_name=_clean_optional_text(_dict_value(item, "benchmarkName", "benchmark_name")),
         )
     else:
         return None

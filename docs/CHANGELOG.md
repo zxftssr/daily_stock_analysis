@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] Web「发现」页新增 20 只成交活跃 A 股宽基 ETF 精选池、250 日回撤、20/60/250 日收益及成交量榜，并可一键预填指数大跌策略计划
+- [改进] 本地股票索引扩展 ETF 分类和跟踪指数字段，ETF 实时行情复用 efinance 到 AkShare 降级链，历史指标复用 SQLite 日线缓存
+- [测试] 增加宽基 ETF 索引生成、榜单 API、回撤计算、发现页切换和策略预填回归测试
 - [chore] 同步 GitHub 用户名为 `zxftssr`，更新仓库链接、CODEOWNERS、桌面更新源及相关文档和测试
 - [新功能] 投资策略计划支持每计划触发通知开关、指定通知渠道及每日/每小时/仅手工检查频率，并在 Web 展示当前检查与通知方式
 - [修复] 启动时为已有 SQLite 投资策略计划表幂等补齐新增字段与通知索引，避免升级后列表查询失败
