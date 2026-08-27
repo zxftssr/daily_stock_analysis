@@ -60,6 +60,7 @@ const STRATEGY_OPTIONS: Array<{ value: InvestmentStrategyType; label: string }> 
 ];
 
 const STATUS_OPTIONS = [
+  { value: 'current', label: '当前计划' },
   { value: '', label: '全部状态' },
   { value: 'draft', label: '草稿' },
   { value: 'active', label: '执行中' },
@@ -318,7 +319,7 @@ const InvestmentPlansPage: React.FC = () => {
   const [plans, setPlans] = useState<InvestmentPlanItem[]>([]);
   const [accounts, setAccounts] = useState<PortfolioAccountItem[]>([]);
   const [summary, setSummary] = useState({ active: 0, triggered: 0, blocked: 0, reviewDue: 0, dataMissing: 0 });
-  const [statusFilter, setStatusFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('current');
   const [strategyFilter, setStrategyFilter] = useState('');
   const [keyword, setKeyword] = useState('');
   const [loading, setLoading] = useState(true);
@@ -344,10 +345,15 @@ const InvestmentPlansPage: React.FC = () => {
     setLoading(true);
     try {
       const response = await investmentPlansApi.list({
-        status: statusFilter ? statusFilter as InvestmentPlanStatus : undefined,
+        status: statusFilter && statusFilter !== 'current'
+          ? statusFilter as InvestmentPlanStatus
+          : undefined,
         strategyType: strategyFilter ? strategyFilter as InvestmentStrategyType : undefined,
       });
-      const items = response.items || [];
+      const loadedItems = response.items || [];
+      const items = statusFilter === 'current'
+        ? loadedItems.filter((plan) => plan.status !== 'closed')
+        : loadedItems;
       setPlans(items);
       setSummary(response.summary || { active: 0, triggered: 0, blocked: 0, reviewDue: 0, dataMissing: 0 });
       setUncertainEvaluations((current) => {

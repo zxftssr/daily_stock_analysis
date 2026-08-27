@@ -115,6 +115,34 @@ describe('InvestmentPlansPage', () => {
     expect(screen.getByText('何时认错')).toBeInTheDocument();
   });
 
+  it('hides removed plans by default while keeping them in all statuses', async () => {
+    const removedPlan: InvestmentPlanItem = {
+      ...plan,
+      id: 2,
+      name: '已移除价值计划',
+      status: 'closed',
+    };
+    vi.mocked(investmentPlansApi.list).mockResolvedValue({
+      items: [plan, removedPlan],
+      total: 2,
+      summary: { active: 1, triggered: 1, blocked: 0, reviewDue: 0, dataMissing: 0 },
+    });
+
+    render(
+      <MemoryRouter>
+        <InvestmentPlansPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('heading', { name: '贵州茅台' })).toBeInTheDocument();
+    expect(screen.getByLabelText('状态')).toHaveValue('current');
+    expect(screen.queryByRole('heading', { name: '已移除价值计划' })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('状态'), { target: { value: '' } });
+
+    expect(await screen.findByRole('heading', { name: '已移除价值计划' })).toBeInTheDocument();
+  });
+
   it('prefills a new plan from route query parameters', async () => {
     render(
       <MemoryRouter initialEntries={['/plans?symbol=HK00700&name=腾讯控股&market=HK']}>
