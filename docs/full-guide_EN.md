@@ -1008,6 +1008,14 @@ Backtesting triggers automatically after the daily analysis flow completes (non-
 | `stop_loss_trigger_rate` | Stop-loss trigger rate (only counts records with SL configured) |
 | `take_profit_trigger_rate` | Take-profit trigger rate (only counts records with TP configured) |
 
+### ETF Crash Staged-Buy Backtest
+
+The Web **Backtest** workspace links to an ETF crash-strategy backtest. It reads only curated ETF daily bars already warmed into SQLite `stock_daily` and never fetches external quotes. For each eligible session, it computes drawdown from the highest high in the latest 250 daily bars, including the current bar. When a tier is reached, the simulation adjusts the ETF holding to that tier's cumulative target percentage of current portfolio equity; unallocated capital remains cash and the final close marks the ending position.
+
+Drawdown thresholds and cumulative target positions must both increase strictly, with at most six tiers. Results include strategy return, buy-and-hold return, portfolio maximum drawdown, average capital utilization, triggered tiers, first/longest wait in trading days, ending equity, and the tier event log. Fees, slippage, dividends, and taxes are excluded, and the backtest never places orders. Fewer than 250 local daily bars produces an explicit warmup instruction.
+
+After a successful run, **Create and activate strategy** reuses the existing `index_crash` plan contract. Each tier becomes a `benchmark_drawdown_250d_pct >= threshold` buy/add step, the ETF itself is the benchmark, account binding remains empty, and notifications inherit the global alert route. The live plan checks and notifies only; it never trades automatically.
+
 ---
 
 ## Investment Strategy Plans
@@ -1102,6 +1110,7 @@ FastAPI provides RESTful API service for configuration management and triggering
 | `/api/v1/backtest/results` | GET | Query backtest results (paginated) |
 | `/api/v1/backtest/performance` | GET | Get overall backtest performance |
 | `/api/v1/backtest/performance/{code}` | GET | Get per-stock backtest performance |
+| `/api/v1/backtest/etf-crash` | POST | Backtest staged ETF buying from 250-day drawdown using local SQLite bars |
 | `/api/v1/investment-plans` | GET/POST | List or create investment strategy plans |
 | `/api/v1/investment-plans/{id}/evaluate` | POST | Manually evaluate one active plan |
 | `/api/v1/investment-plans/evaluate-active?notify=false` | POST | Evaluate all active plans with optional alert delivery |

@@ -330,6 +330,18 @@ const BacktestPage: React.FC = () => {
     <div data-layout="financial-workspace" className="flex min-h-full flex-col bg-background">
       {/* Header */}
       <header data-testid="backtest-toolbar" data-slot="toolbar" className="flex-shrink-0 border-b border-border bg-card px-3 py-3 sm:px-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <h1 className="text-sm font-semibold text-foreground">AI 分析回测</h1>
+            <p className="text-xs text-muted-foreground">验证历史 AI 判断与后续行情表现</p>
+          </div>
+          <a
+            href="/backtest/etf"
+            className="inline-flex h-9 items-center rounded-md border border-primary/60 bg-primary/10 px-3 text-sm font-medium text-primary transition-colors hover:bg-primary/15"
+          >
+            ETF 大跌策略回测
+          </a>
+        </div>
         <div className="flex max-w-5xl flex-wrap items-center gap-2">
           <div className="relative min-w-0 flex-[1_1_220px]">
             <input

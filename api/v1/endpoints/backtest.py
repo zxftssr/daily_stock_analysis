@@ -15,15 +15,55 @@ from api.v1.schemas.backtest import (
     BacktestRunResponse,
     BacktestResultItem,
     BacktestResultsResponse,
+    EtfCrashBacktestRequest,
+    EtfCrashBacktestResponse,
     PerformanceMetrics,
 )
 from api.v1.schemas.common import ErrorResponse
 from src.services.backtest_service import BacktestService
+from src.services.etf_crash_backtest_service import EtfCrashBacktestService
 from src.storage import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+@router.post(
+    "/etf-crash",
+    response_model=EtfCrashBacktestResponse,
+    responses={
+        200: {"description": "ETF 大跌分档策略回测完成"},
+        400: {"description": "参数或本地历史数据不足", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="回测 ETF 大跌分档买入策略",
+    description="仅使用本地 SQLite 日线，以 250 日高点回撤触发累计目标仓位。",
+)
+def run_etf_crash_backtest(
+    request: EtfCrashBacktestRequest,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> EtfCrashBacktestResponse:
+    try:
+        payload = EtfCrashBacktestService(db_manager).run(
+            symbol=request.symbol,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            initial_capital=request.initial_capital,
+            stages=[stage.model_dump() for stage in request.stages],
+        )
+        return EtfCrashBacktestResponse(**payload)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_params", "message": str(exc)},
+        )
+    except Exception as exc:
+        logger.error("ETF 大跌策略回测失败: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "ETF 大跌策略回测失败"},
+        )
 
 
 def _validate_analysis_date_range(

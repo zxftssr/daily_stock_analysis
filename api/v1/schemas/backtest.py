@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -95,3 +96,69 @@ class PerformanceMetrics(BaseModel):
 
     advice_breakdown: Dict[str, Any] = Field(default_factory=dict)
     diagnostics: Dict[str, Any] = Field(default_factory=dict)
+
+
+class EtfCrashBacktestStage(BaseModel):
+    drawdown_pct: float = Field(..., gt=0, le=80)
+    target_position_pct: float = Field(..., gt=0, le=100)
+
+
+class EtfCrashBacktestRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=16)
+    start_date: date
+    end_date: date
+    initial_capital: float = Field(100000, gt=0, le=1_000_000_000)
+    stages: List[EtfCrashBacktestStage] = Field(..., min_length=1, max_length=6)
+
+
+class EtfCrashBacktestTrade(BaseModel):
+    date: str
+    action: str
+    drawdown_pct: float
+    threshold_pct: float
+    target_position_pct: float
+    price: float
+    shares: float
+    cash_after: float
+    position_pct: float
+
+
+class EtfCrashEquityPoint(BaseModel):
+    date: str
+    equity: float
+    drawdown_pct: float
+    position_pct: float
+
+
+class EtfCrashBacktestResponse(BaseModel):
+    symbol: str
+    canonical_code: str
+    name: str
+    benchmark_code: Optional[str] = None
+    benchmark_name: Optional[str] = None
+    source: str
+    storage_code: str
+    requested_start_date: str
+    requested_end_date: str
+    effective_start_date: str
+    effective_end_date: str
+    trading_days: int
+    initial_capital: float
+    final_equity: float
+    cash_remaining: float
+    position_value: float
+    total_return_pct: float
+    buy_hold_return_pct: float
+    excess_return_pct: float
+    max_drawdown_pct: float
+    capital_utilization_pct: float
+    max_position_pct: float
+    trigger_count: int
+    triggered_stage_count: int
+    untriggered_stage_count: int
+    first_trigger_wait_trading_days: int
+    longest_wait_trading_days: int
+    average_entry_price: Optional[float] = None
+    stages: List[EtfCrashBacktestStage] = Field(default_factory=list)
+    trades: List[EtfCrashBacktestTrade] = Field(default_factory=list)
+    equity_curve: List[EtfCrashEquityPoint] = Field(default_factory=list)

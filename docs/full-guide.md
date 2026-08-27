@@ -1147,6 +1147,14 @@ python main.py --debug
 | `stop_loss_trigger_rate` | 止损触发率（仅统计配置了止损的记录） |
 | `take_profit_trigger_rate` | 止盈触发率（仅统计配置了止盈的记录） |
 
+### ETF 大跌分档策略回测
+
+Web「回测」页可进入「ETF 大跌策略回测」。该回测只读取已经预热到 SQLite `stock_daily` 的宽基 ETF 日线，不调用外部行情源。每个交易日使用包含当日在内的最近 250 根日 K 最高价计算回撤；达到档位后，按当时组合权益把 ETF 调整到该档的累计目标仓位，未触发资金保持现金，期末按最后收盘价计价。
+
+档位的回撤阈值和累计目标仓位都必须严格递增，最多 6 档。结果包括策略收益、同期买入持有收益、组合最大回撤、平均资金利用率、实际触发档位、首次/最长等待交易日、期末权益及逐档触发记录。回测不计手续费、滑点、分红和税费，也不会自动下单；本地不足 250 根日 K 时会提示先执行 ETF 历史行情预热。
+
+回测完成后可「一键创建并启用策略」。系统复用现有 `index_crash` 计划契约，把每个档位保存为 `benchmark_drawdown_250d_pct >= 阈值` 的买入/加仓步骤，ETF 自身作为回撤检查基准，账户保持为空，通知沿用全局 alert 路由。实际计划仍只负责检查与提醒，不执行交易。
+
 ---
 
 ## 投资策略计划
@@ -1240,6 +1248,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 | `/api/v1/backtest/results` | GET | 查询回测结果（分页） |
 | `/api/v1/backtest/performance` | GET | 获取整体回测表现 |
 | `/api/v1/backtest/performance/{code}` | GET | 获取单股回测表现 |
+| `/api/v1/backtest/etf-crash` | POST | 使用本地 SQLite 日线回测 ETF 250 日回撤分档买入策略 |
 | `/api/v1/investment-plans` | GET/POST | 查询或创建投资策略计划 |
 | `/api/v1/investment-plans/{id}/evaluate` | POST | 手工检查一份活跃计划 |
 | `/api/v1/investment-plans/evaluate-active?notify=false` | POST | 批量检查活跃计划，可选 alert 通知 |

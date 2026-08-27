@@ -5,12 +5,31 @@ import type {
   BacktestRunResponse,
   BacktestResultsResponse,
   BacktestResultItem,
+  EtfCrashBacktestRequest,
+  EtfCrashBacktestResponse,
   PerformanceMetrics,
 } from '../types/backtest';
 
 // ============ API ============
 
 export const backtestApi = {
+  runEtfCrash: async (params: EtfCrashBacktestRequest): Promise<EtfCrashBacktestResponse> => {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/backtest/etf-crash',
+      {
+        symbol: params.symbol,
+        start_date: params.startDate,
+        end_date: params.endDate,
+        initial_capital: params.initialCapital,
+        stages: params.stages.map(stage => ({
+          drawdown_pct: stage.drawdownPct,
+          target_position_pct: stage.targetPositionPct,
+        })),
+      },
+    );
+    return toCamelCase<EtfCrashBacktestResponse>(response.data);
+  },
+
   /**
    * Trigger backtest evaluation
    */

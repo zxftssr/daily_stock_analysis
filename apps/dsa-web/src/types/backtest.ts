@@ -21,6 +21,72 @@ export interface BacktestRunResponse {
   errors: number;
 }
 
+export interface EtfCrashBacktestStage {
+  drawdownPct: number;
+  targetPositionPct: number;
+}
+
+export interface EtfCrashBacktestRequest {
+  symbol: string;
+  startDate: string;
+  endDate: string;
+  initialCapital: number;
+  stages: EtfCrashBacktestStage[];
+}
+
+export interface EtfCrashBacktestTrade {
+  date: string;
+  action: 'buy' | 'add';
+  drawdownPct: number;
+  thresholdPct: number;
+  targetPositionPct: number;
+  price: number;
+  shares: number;
+  cashAfter: number;
+  positionPct: number;
+}
+
+export interface EtfCrashEquityPoint {
+  date: string;
+  equity: number;
+  drawdownPct: number;
+  positionPct: number;
+}
+
+export interface EtfCrashBacktestResponse {
+  symbol: string;
+  canonicalCode: string;
+  name: string;
+  benchmarkCode?: string | null;
+  benchmarkName?: string | null;
+  source: string;
+  storageCode: string;
+  requestedStartDate: string;
+  requestedEndDate: string;
+  effectiveStartDate: string;
+  effectiveEndDate: string;
+  tradingDays: number;
+  initialCapital: number;
+  finalEquity: number;
+  cashRemaining: number;
+  positionValue: number;
+  totalReturnPct: number;
+  buyHoldReturnPct: number;
+  excessReturnPct: number;
+  maxDrawdownPct: number;
+  capitalUtilizationPct: number;
+  maxPositionPct: number;
+  triggerCount: number;
+  triggeredStageCount: number;
+  untriggeredStageCount: number;
+  firstTriggerWaitTradingDays: number;
+  longestWaitTradingDays: number;
+  averageEntryPrice?: number | null;
+  stages: EtfCrashBacktestStage[];
+  trades: EtfCrashBacktestTrade[];
+  equityCurve: EtfCrashEquityPoint[];
+}
+
 // ============ Result Item ============
 
 export interface BacktestResultItem {
