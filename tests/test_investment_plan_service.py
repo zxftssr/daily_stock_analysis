@@ -7,7 +7,7 @@ import os
 import tempfile
 import threading
 import unittest
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -805,6 +805,325 @@ class InvestmentPlanServiceTestCase(unittest.TestCase):
         plan = self._create_active(service)
         with self.assertRaises(InvestmentPlanStateError):
             service.set_step_status(plan["id"], plan["steps"][0]["id"], "skipped")
+
+    def test_index_crash_execution_records_fill_and_builds_review_summary(self) -> None:
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=10),
+            portfolio_service=self.portfolio,
+        )
+        plan = self._create_active(
+            service,
+            symbol="510300",
+            strategy_type="index_crash",
+            planned_capital=100000,
+            max_position_pct=20,
+            steps=[self._step(threshold=10, target_position_pct=20)],
+        )
+        triggered = service.evaluate_plan(plan["id"])["plan"]
+        step_id = triggered["steps"][0]["id"]
+
+        with self.assertRaisesRegex(InvestmentPlanStateError, "execution details"):
+            service.set_step_status(plan["id"], step_id, "completed")
+
+        completed = service.record_step_execution(
+            plan["id"],
+            step_id,
+            execution_at=datetime.now(),
+            price=10,
+            quantity=2000,
+            fee=5,
+            note="券商成交回报",
+        )
+
+        step = completed["steps"][0]
+        self.assertEqual(step["status"], "completed")
+        self.assertEqual(step["execution_date"], date.today().isoformat())
+        self.assertIsNotNone(step["execution_at"])
+        self.assertEqual(step["execution_amount"], 20000)
+        self.assertEqual(step["execution_note"], "券商成交回报")
+        summary = completed["execution_summary"]
+        self.assertEqual(summary["completed_execution_count"], 1)
+        self.assertEqual(summary["total_quantity"], 2000)
+        self.assertEqual(summary["total_cost"], 20005)
+        self.assertEqual(summary["remaining_cash"], 79995)
+        self.assertEqual(summary["average_cost"], 10.0025)
+        self.assertEqual(summary["unrealized_pnl"], -5)
+        self.assertEqual(summary["target_position_pct"], 20)
+
+        with self.assertRaisesRegex(InvestmentPlanStateError, "cannot change"):
+            service.update_plan(plan["id"], fields={"planned_capital": 120000})
+
+    def test_same_day_later_check_supersedes_execution_price_for_review_and_gate(self) -> None:
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=10),
+            portfolio_service=self.portfolio,
+        )
+        plan = self._create_active(
+            service,
+            symbol="510300",
+            strategy_type="index_crash",
+            planned_capital=100000,
+            max_position_pct=25,
+            steps=[
+                self._step(threshold=10, target_position_pct=20),
+                self._step(
+                    action="add",
+                    operator="gte",
+                    threshold=11,
+                    target_position_pct=25,
+                ),
+            ],
+        )
+        triggered = service.evaluate_plan(plan["id"])["plan"]
+
+        completed = service.record_step_execution(
+            plan["id"],
+            triggered["steps"][0]["id"],
+            execution_at=datetime.now(),
+            price=8,
+            quantity=2500,
+            fee=5,
+        )
+
+        summary = completed["execution_summary"]
+        self.assertEqual(summary["valuation_price"], 8)
+        self.assertEqual(summary["valuation_price_source"], "latest_execution")
+        self.assertEqual(summary["valuation_as_of_date"], date.today().isoformat())
+        self.assertEqual(summary["unrealized_pnl"], -5)
+
+        later_service = InvestmentPlanService(
+            repo=service.repo,
+            stock_service=_StockServiceStub(price=12),
+            portfolio_service=self.portfolio,
+        )
+        checked = later_service.evaluate_plan(plan["id"])
+
+        later_summary = checked["plan"]["execution_summary"]
+        self.assertEqual(later_summary["valuation_price"], 12)
+        self.assertEqual(later_summary["valuation_price_source"], "plan_check")
+        self.assertEqual(later_summary["unrealized_pnl"], 9995)
+        self.assertEqual(checked["newly_triggered_step_ids"], [])
+        self.assertEqual(checked["plan"]["steps"][1]["status"], "pending")
+        self.assertIn("已达到目标仓位", checked["plan"]["last_evaluation_note"])
+
+    def test_delayed_historical_fill_uses_actual_time_not_registration_time(self) -> None:
+        base_step = {
+            "id": 1,
+            "status": "completed",
+            "action": "buy",
+            "execution_date": "2026-08-26",
+            "execution_price": 8,
+            "execution_quantity": 100,
+            "execution_amount": 800,
+            "execution_fee": 0,
+            "target_position_pct": 20,
+            "updated_at": "2026-08-28T12:00:00",
+        }
+        base_plan = {
+            "account_id": None,
+            "status": "closed",
+            "planned_capital": 10000,
+            "last_price": 12,
+            "last_evaluated_at": "2026-08-27T10:00:00",
+        }
+
+        for execution_at in ("2026-08-26T14:30:00", None):
+            with self.subTest(execution_at=execution_at):
+                summary = InvestmentPlanService._execution_summary({
+                    **base_plan,
+                    "steps": [{**base_step, "execution_at": execution_at}],
+                })
+
+                self.assertEqual(summary["valuation_price"], 12)
+                self.assertEqual(summary["valuation_price_source"], "plan_check")
+                self.assertEqual(summary["market_value"], 1200)
+                self.assertEqual(summary["unrealized_pnl"], 400)
+
+    def test_index_crash_execution_requires_capital_and_remaining_cash(self) -> None:
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=10),
+            portfolio_service=self.portfolio,
+        )
+        without_capital = self._create_active(
+            service,
+            symbol="510300",
+            strategy_type="index_crash",
+            steps=[self._step(threshold=10)],
+        )
+        triggered = service.evaluate_plan(without_capital["id"])["plan"]
+        with self.assertRaisesRegex(InvestmentPlanStateError, "planned_capital"):
+            service.record_step_execution(
+                without_capital["id"],
+                triggered["steps"][0]["id"],
+                execution_at=datetime.now(),
+                price=10,
+                quantity=100,
+            )
+
+        service.set_plan_status(without_capital["id"], "closed")
+        funded = self._create_active(
+            service,
+            symbol="510300",
+            strategy_type="index_crash",
+            planned_capital=1000,
+            steps=[self._step(threshold=10)],
+        )
+        funded_triggered = service.evaluate_plan(funded["id"])["plan"]
+        with self.assertRaisesRegex(InvestmentPlanStateError, "remaining cash"):
+            service.record_step_execution(
+                funded["id"],
+                funded_triggered["steps"][0]["id"],
+                execution_at=datetime.now(),
+                price=10,
+                quantity=101,
+            )
+
+    def test_legacy_completed_etf_step_is_flagged_and_can_be_backfilled_first(self) -> None:
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=10),
+            portfolio_service=self.portfolio,
+        )
+        plan = self._create_active(
+            service,
+            symbol="510300",
+            strategy_type="index_crash",
+            planned_capital=100000,
+            max_position_pct=40,
+            steps=[
+                self._step(threshold=10, target_position_pct=20),
+                self._step(action="add", threshold=10, target_position_pct=40),
+            ],
+        )
+        triggered = service.evaluate_plan(plan["id"])["plan"]
+        first_step, second_step = triggered["steps"]
+        legacy = service.repo.update_step_status(
+            plan["id"],
+            first_step["id"],
+            "completed",
+            expected_plan_status="active",
+            expected_step_status="triggered",
+            expected_updated_at=triggered["updated_at"],
+        )
+        self.assertIsNotNone(legacy)
+
+        migrated = service.get_plan(plan["id"])
+        self.assertFalse(migrated["execution_summary"]["execution_data_complete"])
+        self.assertEqual(migrated["execution_summary"]["unrecorded_completed_count"], 1)
+        self.assertIsNone(migrated["execution_summary"]["remaining_cash"])
+        with self.assertRaisesRegex(InvestmentPlanStateError, "Backfill legacy"):
+            service.record_step_execution(
+                plan["id"],
+                second_step["id"],
+                execution_at=datetime.now(),
+                price=10,
+                quantity=2000,
+            )
+
+        backfilled = service.record_step_execution(
+            plan["id"],
+            first_step["id"],
+            execution_at=datetime.now(),
+            price=10,
+            quantity=2000,
+            fee=5,
+        )
+        self.assertTrue(backfilled["execution_summary"]["execution_data_complete"])
+        self.assertEqual(backfilled["execution_summary"]["unrecorded_completed_count"], 0)
+        self.assertEqual(backfilled["steps"][0]["completed_at"], legacy["steps"][0]["completed_at"])
+
+    def test_closed_legacy_etf_step_can_be_backfilled_without_planned_capital(self) -> None:
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=10),
+            portfolio_service=self.portfolio,
+        )
+        plan = self._create_active(
+            service,
+            symbol="510300",
+            strategy_type="index_crash",
+            steps=[self._step(threshold=10, target_position_pct=20)],
+        )
+        triggered = service.evaluate_plan(plan["id"])["plan"]
+        legacy = service.repo.update_step_status(
+            plan["id"],
+            triggered["steps"][0]["id"],
+            "completed",
+            expected_plan_status="active",
+            expected_step_status="triggered",
+            expected_updated_at=triggered["updated_at"],
+        )
+        self.assertIsNotNone(legacy)
+        closed = service.set_plan_status(plan["id"], "closed")
+
+        backfilled = service.record_step_execution(
+            plan["id"],
+            closed["steps"][0]["id"],
+            execution_at=datetime.now(),
+            price=10,
+            quantity=2000,
+            fee=5,
+        )
+
+        self.assertEqual(backfilled["status"], "closed")
+        self.assertEqual(backfilled["execution_summary"]["total_cost"], 20005)
+        self.assertIsNone(backfilled["execution_summary"]["remaining_cash"])
+        self.assertTrue(backfilled["execution_summary"]["execution_data_complete"])
+
+    def test_bound_account_review_keeps_plan_capital_and_account_weight_separate(self) -> None:
+        account = self.portfolio.create_account(
+            name="ETF", broker="Demo", market="cn", base_currency="CNY"
+        )
+        constrained_portfolio = MagicMock(wraps=self.portfolio)
+        constrained_portfolio.get_portfolio_snapshot.return_value = {
+            "accounts": [{
+                "total_equity": 1000000,
+                "total_cash": 980000,
+                "positions": [{
+                    "symbol": "510300",
+                    "market_value_base": 20000,
+                    "price_available": True,
+                    "price_stale": False,
+                }],
+            }]
+        }
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=10),
+            portfolio_service=constrained_portfolio,
+        )
+        plan = self._create_active(
+            service,
+            symbol="510300",
+            strategy_type="index_crash",
+            account_id=account["id"],
+            planned_capital=100000,
+            max_position_pct=20,
+            steps=[self._step(threshold=10, target_position_pct=20)],
+        )
+        triggered = service.evaluate_plan(plan["id"])["plan"]
+        completed = service.record_step_execution(
+            plan["id"],
+            triggered["steps"][0]["id"],
+            execution_at=datetime.now(),
+            price=10,
+            quantity=2000,
+        )
+
+        self.assertEqual(completed["execution_summary"]["capital_utilization_pct"], 20)
+        self.assertIsNone(completed["execution_summary"]["target_deviation_pct"])
+
+    def test_strategy_type_is_frozen_after_activation(self) -> None:
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=10),
+            portfolio_service=self.portfolio,
+        )
+        active = self._create_active(
+            service,
+            symbol="510300",
+            strategy_type="index_crash",
+            planned_capital=100000,
+            steps=[self._step(threshold=10)],
+        )
+        with self.assertRaisesRegex(InvestmentPlanStateError, "cannot change"):
+            service.update_plan(active["id"], fields={"strategy_type": "value"})
 
     def test_closed_plan_rejects_step_mutation_and_stale_step_transition(self) -> None:
         service = InvestmentPlanService(

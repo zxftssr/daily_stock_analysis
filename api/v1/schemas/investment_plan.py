@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
-from datetime import date
-from typing import Dict, List, Literal, Optional
+from datetime import date, datetime
+import re
+from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from pydantic_core import PydanticCustomError
 
 StrategyType = Literal["index_crash", "swing", "dividend", "cycle", "value", "growth"]
 PlanStatus = Literal["draft", "active", "paused", "closed"]
@@ -19,6 +21,11 @@ NotificationChannel = Literal[
     "wechat", "feishu", "telegram", "email", "pushover", "ntfy", "gotify",
     "pushplus", "serverchan3", "custom", "discord", "slack", "astrbot",
 ]
+
+EXECUTION_AT_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$",
+    re.IGNORECASE,
+)
 
 
 class InvestmentPlanStepInput(BaseModel):
@@ -41,6 +48,7 @@ class InvestmentPlanCreateRequest(BaseModel):
     thesis: str = Field(..., min_length=1, max_length=4000)
     invalidation_note: str = Field(..., min_length=1, max_length=4000)
     benchmark_symbol: Optional[str] = Field(None, max_length=16)
+    planned_capital: Optional[float] = Field(None, gt=0)
     max_position_pct: Optional[float] = Field(None, ge=0, le=100)
     required_cash_pct: Optional[float] = Field(None, ge=0, le=100)
     review_date: Optional[date] = None
@@ -56,6 +64,7 @@ class InvestmentPlanUpdateRequest(BaseModel):
     thesis: Optional[str] = Field(None, min_length=1, max_length=4000)
     invalidation_note: Optional[str] = Field(None, min_length=1, max_length=4000)
     benchmark_symbol: Optional[str] = Field(None, max_length=16)
+    planned_capital: Optional[float] = Field(None, gt=0)
     max_position_pct: Optional[float] = Field(None, ge=0, le=100)
     required_cash_pct: Optional[float] = Field(None, ge=0, le=100)
     review_date: Optional[date] = None
@@ -73,6 +82,31 @@ class InvestmentPlanStepStatusRequest(BaseModel):
     status: StepStatus
 
 
+class InvestmentPlanExecutionRequest(BaseModel):
+    execution_at: datetime
+    price: float = Field(..., gt=0)
+    quantity: float = Field(..., gt=0)
+    fee: float = Field(0, ge=0)
+    note: Optional[str] = Field(None, max_length=255)
+
+    @field_validator("execution_at", mode="before")
+    @classmethod
+    def validate_execution_at_contract(cls, value: Any) -> Any:
+        if isinstance(value, datetime):
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise PydanticCustomError(
+                    "execution_at_timezone",
+                    "execution_at must include a timezone offset",
+                )
+            return value
+        if not EXECUTION_AT_PATTERN.fullmatch(str(value or "")):
+            raise PydanticCustomError(
+                "execution_at_format",
+                "execution_at must include date, time to seconds, and timezone offset",
+            )
+        return value
+
+
 class InvestmentPlanStepItem(BaseModel):
     id: int
     plan_id: int
@@ -87,9 +121,38 @@ class InvestmentPlanStepItem(BaseModel):
     status: StepStatus
     triggered_at: Optional[str] = None
     completed_at: Optional[str] = None
+    execution_date: Optional[str] = None
+    execution_at: Optional[str] = None
+    execution_price: Optional[float] = None
+    execution_quantity: Optional[float] = None
+    execution_amount: Optional[float] = None
+    execution_fee: Optional[float] = None
+    execution_note: Optional[str] = None
     notified_at: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+
+
+class InvestmentPlanExecutionSummary(BaseModel):
+    completed_execution_count: int = 0
+    unrecorded_completed_count: int = 0
+    execution_data_complete: bool = True
+    planned_capital: Optional[float] = None
+    total_quantity: float = 0
+    gross_amount: float = 0
+    total_fees: float = 0
+    total_cost: float = 0
+    average_cost: Optional[float] = None
+    remaining_cash: Optional[float] = None
+    valuation_price: Optional[float] = None
+    valuation_price_source: Optional[Literal["plan_check", "latest_execution"]] = None
+    valuation_as_of_date: Optional[str] = None
+    market_value: Optional[float] = None
+    unrealized_pnl: Optional[float] = None
+    return_pct: Optional[float] = None
+    target_position_pct: Optional[float] = None
+    capital_utilization_pct: Optional[float] = None
+    target_deviation_pct: Optional[float] = None
 
 
 class InvestmentPlanItem(BaseModel):
@@ -104,6 +167,7 @@ class InvestmentPlanItem(BaseModel):
     thesis: str
     invalidation_note: str
     benchmark_symbol: Optional[str] = None
+    planned_capital: Optional[float] = None
     max_position_pct: Optional[float] = None
     required_cash_pct: Optional[float] = None
     review_date: Optional[str] = None
@@ -120,6 +184,9 @@ class InvestmentPlanItem(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     steps: List[InvestmentPlanStepItem] = Field(default_factory=list)
+    execution_summary: InvestmentPlanExecutionSummary = Field(
+        default_factory=InvestmentPlanExecutionSummary
+    )
 
 
 class InvestmentPlanListResponse(BaseModel):

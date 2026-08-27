@@ -38,11 +38,13 @@ import type { PortfolioAccountItem } from '../types/portfolio';
 import type {
   InvestmentPlanCreateRequest,
   InvestmentPlanCheckFrequency,
+  InvestmentPlanExecutionRequest,
   InvestmentPlanItem,
   InvestmentPlanNotificationChannel,
   InvestmentPlanStatus,
   InvestmentPlanStepAction,
   InvestmentPlanStepInput,
+  InvestmentPlanStepItem,
   InvestmentPlanStepMetric,
   InvestmentPlanStepOperator,
   InvestmentPlanStepStatus,
@@ -73,6 +75,12 @@ const MARKET_OPTIONS = [
   { value: 'hk', label: '港股' },
   { value: 'us', label: '美股' },
 ];
+
+const MARKET_CURRENCY = {
+  cn: 'CNY',
+  hk: 'HKD',
+  us: 'USD',
+} as const;
 
 const ACTION_OPTIONS = [
   { value: 'buy', label: '买入' },
@@ -174,6 +182,7 @@ type PlanForm = {
   thesis: string;
   invalidationNote: string;
   benchmarkSymbol: string;
+  plannedCapital: string;
   maxPositionPct: string;
   requiredCashPct: string;
   reviewDate: string;
@@ -266,6 +275,7 @@ const emptyForm = (): PlanForm => ({
   market: 'cn',
   name: '',
   accountId: '',
+  plannedCapital: '',
   reviewDate: '',
   notifyOnTrigger: true,
   notificationChannel: '',
@@ -284,10 +294,39 @@ const formatNumber = (value?: number | null, digits = 2) => {
   return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: digits }).format(value);
 };
 
+const formatMoney = (
+  value: number | null | undefined,
+  market: InvestmentPlanItem['market'],
+) => `${MARKET_CURRENCY[market]} ${formatNumber(value)}`;
+
 const formatDateTime = (value?: string | null) => {
   if (!value) return '尚未检查';
   const dateValue = new Date(value);
   return Number.isNaN(dateValue.getTime()) ? value : dateValue.toLocaleString('zh-CN', { hour12: false });
+};
+
+const currentDateTimeInputValue = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const hour = String(now.getHours()).padStart(2, '0');
+  const minute = String(now.getMinutes()).padStart(2, '0');
+  const second = String(now.getSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+};
+
+type ExecutionTarget = {
+  plan: InvestmentPlanItem;
+  step: InvestmentPlanStepItem;
+};
+
+type ExecutionForm = {
+  executionAt: string;
+  price: string;
+  quantity: string;
+  fee: string;
+  note: string;
 };
 
 const conditionText = (step: InvestmentPlanStepInput) => {
@@ -302,6 +341,20 @@ const conditionText = (step: InvestmentPlanStepInput) => {
 const actionLabel = (action: InvestmentPlanStepAction) => (
   ACTION_OPTIONS.find((option) => option.value === action)?.label ?? action
 );
+
+const suggestedExecutionAmount = (
+  plan: InvestmentPlanItem,
+  step: InvestmentPlanStepItem,
+): number | null => {
+  if (plan.accountId != null || !plan.executionSummary.executionDataComplete) return null;
+  const remainingCash = plan.executionSummary.remainingCash;
+  const marketValue = plan.executionSummary.marketValue;
+  const targetPositionPct = step.targetPositionPct;
+  if (remainingCash == null || marketValue == null || targetPositionPct == null) return null;
+  const currentEquity = remainingCash + marketValue;
+  if (currentEquity <= 0) return null;
+  return Math.max(0, currentEquity * targetPositionPct / 100 - marketValue);
+};
 
 const isSettingsOnlyPlan = (plan: InvestmentPlanItem) => (
   plan.status === 'active' || plan.steps.some((step) => step.status !== 'pending')
@@ -336,6 +389,16 @@ const InvestmentPlansPage: React.FC = () => {
   );
   const [transitioningId, setTransitioningId] = useState<number | null>(null);
   const [closePlan, setClosePlan] = useState<InvestmentPlanItem | null>(null);
+  const [executionTarget, setExecutionTarget] = useState<ExecutionTarget | null>(null);
+  const [executionForm, setExecutionForm] = useState<ExecutionForm>({
+    executionAt: currentDateTimeInputValue(),
+    price: '',
+    quantity: '',
+    fee: '0',
+    note: '',
+  });
+  const [executionError, setExecutionError] = useState<string | null>(null);
+  const [savingExecution, setSavingExecution] = useState(false);
 
   useEffect(() => {
     document.title = '策略计划 - DSA';
@@ -447,6 +510,7 @@ const InvestmentPlansPage: React.FC = () => {
       thesis: plan.thesis,
       invalidationNote: plan.invalidationNote,
       benchmarkSymbol: plan.benchmarkSymbol || '',
+      plannedCapital: plan.plannedCapital == null ? '' : String(plan.plannedCapital),
       maxPositionPct: plan.maxPositionPct == null ? '' : String(plan.maxPositionPct),
       requiredCashPct: plan.requiredCashPct == null ? '' : String(plan.requiredCashPct),
       reviewDate: plan.reviewDate || '',
@@ -502,14 +566,19 @@ const InvestmentPlansPage: React.FC = () => {
   const savePlan = async (activate: boolean) => {
     setFormError(null);
     const settingsOnly = Boolean(editingPlan && isSettingsOnlyPlan(editingPlan));
+    const plannedCapital = toOptionalNumber(form.plannedCapital);
     const maxPositionPct = toOptionalNumber(form.maxPositionPct);
     const requiredCashPct = toOptionalNumber(form.requiredCashPct);
     if (!form.symbol.trim() || !form.thesis.trim() || !form.invalidationNote.trim()) {
       setFormError('请完整填写标的、投资逻辑和失效条件。');
       return;
     }
-    if (Number.isNaN(maxPositionPct) || Number.isNaN(requiredCashPct)) {
-      setFormError('仓位和现金比例必须是有效数字。');
+    if (Number.isNaN(plannedCapital) || Number.isNaN(maxPositionPct) || Number.isNaN(requiredCashPct)) {
+      setFormError('计划资金、仓位和现金比例必须是有效数字。');
+      return;
+    }
+    if (plannedCapital != null && plannedCapital <= 0) {
+      setFormError('计划资金必须大于 0。');
       return;
     }
     let steps: InvestmentPlanStepInput[];
@@ -532,13 +601,20 @@ const InvestmentPlansPage: React.FC = () => {
           notificationChannels: form.notificationChannel ? [form.notificationChannel] : [],
           checkFrequency: form.checkFrequency,
         };
-        await investmentPlansApi.update(editingPlan.id, settingsOnly ? notificationSettings : {
+        await investmentPlansApi.update(editingPlan.id, settingsOnly ? {
+          ...notificationSettings,
+          ...(editingPlan.strategyType === 'index_crash'
+            && editingPlan.executionSummary.completedExecutionCount === 0
+            ? { plannedCapital }
+            : {}),
+        } : {
           ...notificationSettings,
           name: form.name.trim(),
           strategyType: form.strategyType,
           thesis: form.thesis.trim(),
           invalidationNote: form.invalidationNote.trim(),
           benchmarkSymbol: form.benchmarkSymbol.trim() || null,
+          plannedCapital: form.strategyType === 'index_crash' ? plannedCapital : null,
           maxPositionPct,
           requiredCashPct,
           reviewDate: form.reviewDate || null,
@@ -558,6 +634,7 @@ const InvestmentPlansPage: React.FC = () => {
           thesis: form.thesis.trim(),
           invalidationNote: form.invalidationNote.trim(),
           benchmarkSymbol: form.benchmarkSymbol.trim() || null,
+          plannedCapital: form.strategyType === 'index_crash' ? plannedCapital : null,
           maxPositionPct,
           requiredCashPct,
           reviewDate: form.reviewDate || null,
@@ -788,6 +865,69 @@ const InvestmentPlansPage: React.FC = () => {
     }
   };
 
+  const openExecution = (plan: InvestmentPlanItem, step: InvestmentPlanStepItem) => {
+    const price = plan.lastPrice && plan.lastPrice > 0 ? plan.lastPrice : null;
+    const targetAmount = suggestedExecutionAmount(plan, step);
+    const suggestedQuantity = price && targetAmount
+      ? Math.floor(targetAmount / price / 100) * 100
+      : null;
+    setExecutionTarget({ plan, step });
+    setExecutionForm({
+      executionAt: currentDateTimeInputValue(),
+      price: price == null ? '' : String(price),
+      quantity: suggestedQuantity && suggestedQuantity > 0 ? String(suggestedQuantity) : '',
+      fee: '0',
+      note: '',
+    });
+    setExecutionError(null);
+  };
+
+  const saveExecution = async () => {
+    if (!executionTarget) return;
+    const price = Number(executionForm.price);
+    const quantity = Number(executionForm.quantity);
+    const fee = Number(executionForm.fee || '0');
+    if (!executionForm.executionAt || !Number.isFinite(price) || price <= 0) {
+      setExecutionError('请填写有效的实际成交时间和成交价格。');
+      return;
+    }
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      setExecutionError('成交份额必须大于 0。');
+      return;
+    }
+    if (!Number.isFinite(fee) || fee < 0) {
+      setExecutionError('手续费不能小于 0。');
+      return;
+    }
+    const payload: InvestmentPlanExecutionRequest = {
+      executionAt: executionForm.executionAt,
+      price,
+      quantity,
+      fee,
+      note: executionForm.note.trim() || null,
+    };
+    setSavingExecution(true);
+    setExecutionError(null);
+    try {
+      await investmentPlansApi.recordStepExecution(
+        executionTarget.plan.id,
+        executionTarget.step.id,
+        payload,
+      );
+      setExecutionTarget(null);
+      setNotice({
+        variant: 'success',
+        title: '成交已登记',
+        message: '本档已标记为已完成，持仓、剩余资金和收益复盘已更新。',
+      });
+      await loadPlans();
+    } catch (requestError) {
+      setExecutionError(getParsedApiError(requestError).message);
+    } finally {
+      setSavingExecution(false);
+    }
+  };
+
   return (
     <AppPage data-testid="investment-plans-page" className="max-w-[1680px] space-y-4">
       <section className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
@@ -896,6 +1036,7 @@ const InvestmentPlansPage: React.FC = () => {
                 else void transitionPlan(plan, status);
               }}
               onStepStatus={(stepId, status) => void transitionStep(plan, stepId, status)}
+              onRecordExecution={(step) => openExecution(plan, step)}
             />
           ))
         ) : (
@@ -925,6 +1066,16 @@ const InvestmentPlansPage: React.FC = () => {
           steps: current.steps.filter((step) => step.key !== key),
         }))}
         onSave={(activate) => void savePlan(activate)}
+      />
+
+      <ExecutionDrawer
+        target={executionTarget}
+        form={executionForm}
+        error={executionError}
+        saving={savingExecution}
+        onClose={() => setExecutionTarget(null)}
+        onFormChange={(fields) => setExecutionForm((current) => ({ ...current, ...fields }))}
+        onSave={() => void saveExecution()}
       />
 
       <ConfirmDialog
@@ -962,6 +1113,109 @@ const SummaryTile: React.FC<{
   </div>
 );
 
+const MetricPair: React.FC<{ label: string; value: string }> = ({ label, value }) => (
+  <div>
+    <div className="text-muted-foreground">{label}</div>
+    <div className="mt-1 font-mono font-medium text-foreground">{value}</div>
+  </div>
+);
+
+const ExecutionDrawer: React.FC<{
+  target: ExecutionTarget | null;
+  form: ExecutionForm;
+  error: string | null;
+  saving: boolean;
+  onClose: () => void;
+  onFormChange: (fields: Partial<ExecutionForm>) => void;
+  onSave: () => void;
+}> = ({ target, form, error, saving, onClose, onFormChange, onSave }) => {
+  const price = Number(form.price);
+  const quantity = Number(form.quantity);
+  const amount = Number.isFinite(price) && price > 0 && Number.isFinite(quantity) && quantity > 0
+    ? price * quantity
+    : null;
+  const suggestedAmount = target ? suggestedExecutionAmount(target.plan, target.step) : null;
+  const currency = target ? MARKET_CURRENCY[target.plan.market] : 'CNY';
+  const guidance = target?.plan.accountId != null
+    ? '该计划已绑定账户，档位目标按账户总权益计算；请结合账户当前持仓人工填写，本页不自动建议金额。'
+    : target && !target.plan.executionSummary.executionDataComplete
+      ? '这是旧版成交补录，请按券商真实回报填写；补录完成前不自动建议金额。'
+      : `建议新增投入约 ${currency} ${formatNumber(suggestedAmount)}。`;
+
+  return (
+    <Drawer
+      isOpen={Boolean(target)}
+      onClose={onClose}
+      title="登记实际买入"
+      width="max-w-xl"
+      zIndex={60}
+    >
+      {target ? (
+        <div className="space-y-5">
+          <InlineAlert
+            variant="info"
+            title={`${target.plan.name || target.plan.symbol} · ${actionLabel(target.step.action)}`}
+            message={`本档目标仓位 ${formatNumber(target.step.targetPositionPct)}%。${guidance} 请按真实成交回报填写，系统不会代替券商下单。`}
+          />
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Input
+              label="实际成交时间"
+              type="datetime-local"
+              step="1"
+              max={currentDateTimeInputValue()}
+              value={form.executionAt}
+              onChange={(event) => onFormChange({ executionAt: event.target.value })}
+            />
+            <Input
+              label="成交价格"
+              type="number"
+              min="0"
+              step="any"
+              value={form.price}
+              onChange={(event) => onFormChange({ price: event.target.value })}
+            />
+            <Input
+              label="成交份额"
+              type="number"
+              min="0"
+              step="any"
+              value={form.quantity}
+              onChange={(event) => onFormChange({ quantity: event.target.value })}
+              hint="A 股 ETF 通常按 100 份整数倍成交，请以实际回报为准。"
+            />
+            <Input
+              label={`手续费（${currency}）`}
+              type="number"
+              min="0"
+              step="any"
+              value={form.fee}
+              onChange={(event) => onFormChange({ fee: event.target.value })}
+            />
+          </div>
+          <div className="rounded-md border border-border bg-muted/20 p-3 text-sm">
+            <span className="text-muted-foreground">成交金额：</span>
+            <strong className="font-mono text-foreground">{formatMoney(amount, target.plan.market)}</strong>
+          </div>
+          <Input
+            label="成交备注"
+            value={form.note}
+            maxLength={255}
+            onChange={(event) => onFormChange({ note: event.target.value })}
+            placeholder="可填写券商流水号或执行说明"
+          />
+          {error ? <InlineAlert variant="danger" title="无法登记成交" message={error} /> : null}
+          <div className="flex justify-end gap-2 border-t border-border pt-4">
+            <Button variant="ghost" onClick={onClose} disabled={saving}>取消</Button>
+            <Button onClick={onSave} isLoading={saving} loadingText="登记中">
+              <Check className="h-4 w-4" />确认登记
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </Drawer>
+  );
+};
+
 const PlanCard: React.FC<{
   plan: InvestmentPlanItem;
   accountName?: string;
@@ -971,7 +1225,8 @@ const PlanCard: React.FC<{
   onEdit: () => void;
   onStatus: (status: InvestmentPlanStatus) => void;
   onStepStatus: (stepId: number, status: InvestmentPlanStepStatus) => void;
-}> = ({ plan, accountName, busy, evaluationUncertain, onEvaluate, onEdit, onStatus, onStepStatus }) => {
+  onRecordExecution: (step: InvestmentPlanStepItem) => void;
+}> = ({ plan, accountName, busy, evaluationUncertain, onEvaluate, onEdit, onStatus, onStepStatus, onRecordExecution }) => {
   const statusMeta = STATUS_META[plan.status];
   const frequencyLabel = CHECK_FREQUENCY_OPTIONS.find((item) => item.value === plan.checkFrequency)?.label || plan.checkFrequency;
   const selectedChannel = plan.notificationChannels[0] || '';
@@ -998,6 +1253,7 @@ const PlanCard: React.FC<{
             <span>最大仓位 <strong className="text-foreground">{plan.maxPositionPct == null ? '--' : `${formatNumber(plan.maxPositionPct)}%`}</strong></span>
             <span>现金底线 <strong className="text-foreground">{plan.requiredCashPct == null ? '--' : `${formatNumber(plan.requiredCashPct)}%`}</strong></span>
             <span>账户 <strong className="text-foreground">{accountName || '未绑定'}</strong></span>
+            <span>计价 <strong className="text-foreground">{MARKET_CURRENCY[plan.market]}（市场本币）</strong></span>
           </div>
           <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
             <span>自动检查 <strong className="text-foreground">{frequencyLabel}</strong></span>
@@ -1064,6 +1320,45 @@ const PlanCard: React.FC<{
           {plan.lastEvaluationNote ? (
             <div className="text-xs leading-5 text-muted-foreground">{plan.lastEvaluationNote}</div>
           ) : null}
+          {plan.strategyType === 'index_crash' ? (
+            plan.plannedCapital == null ? (
+              <InlineAlert
+                variant="warning"
+                title={plan.executionSummary.unrecordedCompletedCount > 0 ? '旧版成交记录待补录' : '尚未设置计划资金'}
+                message={plan.executionSummary.unrecordedCompletedCount > 0
+                  ? `有 ${plan.executionSummary.unrecordedCompletedCount} 个旧版已完成档位需要补录。可补录价格、份额和费用，但未设置计划资金时不会计算剩余现金和计划资金占用。`
+                  : '在“设置”中填写计划资金后，才能登记实际买入并核算持仓与剩余现金。'}
+              />
+            ) : (
+              <div className="rounded-lg border border-border bg-muted/20 p-3">
+                <div className="text-xs font-semibold text-foreground">执行复盘</div>
+                {!plan.executionSummary.executionDataComplete ? (
+                  <div className="mt-2 text-xs leading-5 text-warning">
+                    有 {plan.executionSummary.unrecordedCompletedCount} 个旧版已完成档位尚未补录成交；补录完成前不会计算余额、收益或仓位，也不能登记新触发档位。
+                  </div>
+                ) : null}
+                <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 text-xs sm:grid-cols-4">
+                  <MetricPair label="计划资金" value={formatMoney(plan.plannedCapital, plan.market)} />
+                  <MetricPair label="累计投入" value={formatMoney(plan.executionSummary.totalCost, plan.market)} />
+                  <MetricPair label="剩余现金" value={formatMoney(plan.executionSummary.remainingCash, plan.market)} />
+                  <MetricPair label="持有份额" value={formatNumber(plan.executionSummary.totalQuantity, 4)} />
+                  <MetricPair label="平均成本" value={formatNumber(plan.executionSummary.averageCost, 4)} />
+                  <MetricPair
+                    label="计划资金占用"
+                    value={`${formatNumber(plan.executionSummary.capitalUtilizationPct)}%`}
+                  />
+                  <MetricPair
+                    label={plan.accountId == null ? '档位目标 / 偏差' : '账户目标仓位（独立口径）'}
+                    value={plan.accountId == null
+                      ? `${formatNumber(plan.executionSummary.targetPositionPct)}% / ${formatNumber(plan.executionSummary.targetDeviationPct)}%`
+                      : `${formatNumber(plan.executionSummary.targetPositionPct)}%`}
+                  />
+                  <MetricPair label="浮动盈亏" value={formatMoney(plan.executionSummary.unrealizedPnl, plan.market)} />
+                  <MetricPair label="实际收益" value={`${formatNumber(plan.executionSummary.returnPct)}%`} />
+                </div>
+              </div>
+            )
+          ) : null}
         </div>
 
         <div className="p-4">
@@ -1077,6 +1372,8 @@ const PlanCard: React.FC<{
           <div className="relative space-y-0 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
             {plan.steps.map((step) => {
               const meta = STEP_STATUS_META[step.status];
+              const isEtfBuyStep = plan.strategyType === 'index_crash' && ['buy', 'add'].includes(step.action);
+              const needsLegacyBackfill = isEtfBuyStep && step.status === 'completed' && step.executionAmount == null;
               return (
                 <div key={step.id} className="relative grid grid-cols-[16px_minmax(0,1fr)] gap-3 py-3">
                   <span className={cn('relative z-10 mt-1 h-4 w-4 rounded-full border-2', meta.dot)} />
@@ -1087,17 +1384,27 @@ const PlanCard: React.FC<{
                         <span className="font-mono text-xs text-muted-foreground">{conditionText(step)}</span>
                         <span className={cn('text-xs font-medium', meta.tone)}>{meta.label}</span>
                       </div>
-                      {plan.status !== 'closed' && step.status === 'triggered' ? (
+                      {(plan.status !== 'closed' && step.status === 'triggered') || needsLegacyBackfill ? (
                         <div className="flex gap-1">
-                          <Button size="xsm" variant="secondary" onClick={() => onStepStatus(step.id, 'completed')} disabled={busy}>
-                            <Check className="h-3.5 w-3.5" />完成
-                          </Button>
-                          <Button size="xsm" variant="ghost" onClick={() => onStepStatus(step.id, 'skipped')} disabled={busy}>
-                            <SkipForward className="h-3.5 w-3.5" />跳过
-                          </Button>
-                          <Button size="xsm" variant="ghost" onClick={() => onStepStatus(step.id, 'pending')} disabled={busy}>
-                            <RotateCcw className="h-3.5 w-3.5" />重置
-                          </Button>
+                          {isEtfBuyStep ? (
+                            <Button size="xsm" variant="secondary" onClick={() => onRecordExecution(step)} disabled={busy || (!needsLegacyBackfill && plan.plannedCapital == null)}>
+                              <Check className="h-3.5 w-3.5" />{needsLegacyBackfill ? '补录成交' : plan.plannedCapital == null ? '先设置资金' : '登记买入'}
+                            </Button>
+                          ) : (
+                            <Button size="xsm" variant="secondary" onClick={() => onStepStatus(step.id, 'completed')} disabled={busy}>
+                              <Check className="h-3.5 w-3.5" />完成
+                            </Button>
+                          )}
+                          {step.status === 'triggered' ? (
+                            <>
+                              <Button size="xsm" variant="ghost" onClick={() => onStepStatus(step.id, 'skipped')} disabled={busy}>
+                                <SkipForward className="h-3.5 w-3.5" />跳过
+                              </Button>
+                              <Button size="xsm" variant="ghost" onClick={() => onStepStatus(step.id, 'pending')} disabled={busy}>
+                                <RotateCcw className="h-3.5 w-3.5" />重置
+                              </Button>
+                            </>
+                          ) : null}
                         </div>
                       ) : null}
                     </div>
@@ -1105,6 +1412,12 @@ const PlanCard: React.FC<{
                       {step.targetPositionPct != null ? <span>目标仓位 {formatNumber(step.targetPositionPct)}%</span> : null}
                       {step.note ? <span>{step.note}</span> : null}
                       {step.triggeredAt ? <span>触发于 {formatDateTime(step.triggeredAt)}</span> : null}
+                      {step.executionAt ? <span>成交于 {formatDateTime(step.executionAt)}</span> : step.executionDate ? <span>成交日 {step.executionDate}</span> : null}
+                      {step.executionPrice != null ? <span>成交价 {formatNumber(step.executionPrice, 4)}</span> : null}
+                      {step.executionQuantity != null ? <span>份额 {formatNumber(step.executionQuantity, 4)}</span> : null}
+                      {step.executionAmount != null ? <span>金额 {formatMoney(step.executionAmount, plan.market)}</span> : null}
+                      {step.executionFee != null ? <span>手续费 {formatMoney(step.executionFee, plan.market)}</span> : null}
+                      {step.executionNote ? <span>{step.executionNote}</span> : null}
                     </div>
                   </div>
                 </div>
@@ -1149,11 +1462,29 @@ const PlanEditorDrawer: React.FC<{
   <Drawer isOpen={open} onClose={onClose} title={settingsOnly ? '检查与通知设置' : editingPlan ? '编辑策略计划' : '制定策略计划'} width="max-w-4xl">
     <div className="space-y-6">
       {settingsOnly ? (
-        <InlineAlert
-          variant="info"
-          title="执行条件保持不变"
-          message="这份计划正在执行或已有执行历史，本次只修改检查频率和通知方式。"
-        />
+        <>
+          <InlineAlert
+            variant="info"
+            title="执行条件保持不变"
+            message={form.strategyType === 'index_crash'
+              ? '这份计划正在执行或已有执行历史，本次只修改执行资金、检查频率和通知方式。'
+              : '这份计划正在执行或已有执行历史，本次只修改检查频率和通知方式。'}
+          />
+          {form.strategyType === 'index_crash' ? (
+            <Input
+              label="计划资金"
+              type="number"
+              min="0"
+              step="any"
+              value={form.plannedCapital}
+              onChange={(event) => onFormChange({ plannedCapital: event.target.value })}
+              disabled={Boolean(editingPlan?.executionSummary.completedExecutionCount)}
+              hint={editingPlan?.executionSummary.completedExecutionCount
+                ? `已有成交记录，计划资金不能再修改；仍按 ${MARKET_CURRENCY[form.market]} 市场本币计价。`
+                : `按 ${MARKET_CURRENCY[form.market]} 市场本币计价，用于计算每档建议投入、剩余现金和实际仓位；不要求绑定账户。`}
+            />
+          ) : null}
+        </>
       ) : null}
 
       <section className={settingsOnly ? 'hidden' : undefined}>
@@ -1188,7 +1519,10 @@ const PlanEditorDrawer: React.FC<{
           <span className="font-mono text-xs text-muted-foreground">02</span>
           <h3 className="text-sm font-semibold text-foreground">账户纪律</h3>
         </div>
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {form.strategyType === 'index_crash' ? (
+            <Input label="计划资金" type="number" min="0" step="any" value={form.plannedCapital} onChange={(event) => onFormChange({ plannedCapital: event.target.value })} hint={`按 ${MARKET_CURRENCY[form.market]} 市场本币计价，用于人工成交与复盘，可不绑定账户`} />
+          ) : null}
           <Input label="最大仓位 %" type="number" min="0" max="100" value={form.maxPositionPct} onChange={(event) => onFormChange({ maxPositionPct: event.target.value })} />
           <Input label="最低现金 %" type="number" min="0" max="100" value={form.requiredCashPct} onChange={(event) => onFormChange({ requiredCashPct: event.target.value })} />
           <Input label="对标指数" value={form.benchmarkSymbol} onChange={(event) => onFormChange({ benchmarkSymbol: event.target.value })} hint="使用基准回撤条件时必填" />

@@ -14,6 +14,7 @@ vi.mock('../../api/investmentPlans', () => ({
     update: vi.fn(),
     setStatus: vi.fn(),
     setStepStatus: vi.fn(),
+    recordStepExecution: vi.fn(),
     evaluate: vi.fn(),
     evaluateActive: vi.fn(),
   },
@@ -50,6 +51,25 @@ const plan: InvestmentPlanItem = {
   lastEvaluationNote: 'matched 1 pending step(s)',
   lastBlockedReasons: [],
   triggeredStepCount: 1,
+  executionSummary: {
+    completedExecutionCount: 0,
+    unrecordedCompletedCount: 0,
+    executionDataComplete: true,
+    plannedCapital: null,
+    totalQuantity: 0,
+    grossAmount: 0,
+    totalFees: 0,
+    totalCost: 0,
+    averageCost: null,
+    remainingCash: null,
+    valuationPrice: 1350,
+    marketValue: 0,
+    unrealizedPnl: null,
+    returnPct: null,
+    targetPositionPct: null,
+    capitalUtilizationPct: null,
+    targetDeviationPct: null,
+  },
   steps: [{
     id: 11,
     planId: 1,
@@ -79,6 +99,7 @@ describe('InvestmentPlansPage', () => {
     vi.mocked(investmentPlansApi.get).mockResolvedValue(plan);
     vi.mocked(investmentPlansApi.setStatus).mockResolvedValue(plan);
     vi.mocked(investmentPlansApi.setStepStatus).mockResolvedValue(plan);
+    vi.mocked(investmentPlansApi.recordStepExecution).mockResolvedValue(plan);
     vi.mocked(investmentPlansApi.evaluate).mockResolvedValue({
       plan,
       metricValues: { price: 1350 },
@@ -228,6 +249,267 @@ describe('InvestmentPlansPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '重置' }));
     await waitFor(() => expect(investmentPlansApi.setStepStatus).toHaveBeenCalledWith(1, 11, 'pending'));
+  });
+
+  it('records a triggered ETF buy and renders the execution review', async () => {
+    const etfPlan: InvestmentPlanItem = {
+      ...plan,
+      symbol: '510300',
+      name: '华泰柏瑞沪深300ETF大跌分档计划',
+      strategyType: 'index_crash',
+      strategyLabel: '指数大跌',
+      plannedCapital: 100000,
+      lastPrice: 4,
+      executionSummary: {
+        ...plan.executionSummary,
+        plannedCapital: 100000,
+        remainingCash: 100000,
+        valuationPrice: 4,
+        marketValue: 0,
+        capitalUtilizationPct: 0,
+      },
+      steps: [{
+        ...plan.steps[0],
+        metric: 'benchmark_drawdown_250d_pct',
+        operator: 'gte',
+        threshold: 5,
+        targetPositionPct: 20,
+      }],
+    };
+    vi.mocked(investmentPlansApi.list).mockResolvedValue({
+      items: [etfPlan],
+      total: 1,
+      summary: { active: 1, triggered: 1, blocked: 0, reviewDue: 0, dataMissing: 0 },
+    });
+    vi.mocked(investmentPlansApi.recordStepExecution).mockResolvedValue(etfPlan);
+
+    render(<MemoryRouter><InvestmentPlansPage /></MemoryRouter>);
+
+    expect(await screen.findByText('执行复盘')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '登记买入' }));
+    expect(screen.getByRole('dialog', { name: '登记实际买入' })).toBeInTheDocument();
+    const executionAt = (screen.getByLabelText('实际成交时间') as HTMLInputElement).value;
+    expect(executionAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{3})?)?$/);
+    expect(screen.getByLabelText('成交价格')).toHaveValue(4);
+    expect(screen.getByLabelText('成交份额')).toHaveValue(5000);
+    fireEvent.change(screen.getByLabelText('手续费（CNY）'), { target: { value: '5' } });
+    fireEvent.change(screen.getByLabelText('成交备注'), { target: { value: '券商回报' } });
+    fireEvent.click(screen.getByRole('button', { name: '确认登记' }));
+
+    await waitFor(() => expect(investmentPlansApi.recordStepExecution).toHaveBeenCalledWith(
+      1,
+      11,
+      expect.objectContaining({ price: 4, quantity: 5000, fee: 5, note: '券商回报' }),
+    ));
+    const submittedExecutionAt = vi.mocked(investmentPlansApi.recordStepExecution).mock.calls[0][2].executionAt;
+    expect(submittedExecutionAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+    expect(await screen.findByText('成交已登记')).toBeInTheDocument();
+  });
+
+  it('flags and backfills a legacy completed ETF tier without treating cash as complete', async () => {
+    const legacyPlan: InvestmentPlanItem = {
+      ...plan,
+      symbol: '510300',
+      strategyType: 'index_crash',
+      strategyLabel: '指数大跌',
+      status: 'closed',
+      plannedCapital: null,
+      lastPrice: 4,
+      executionSummary: {
+        ...plan.executionSummary,
+        plannedCapital: null,
+        unrecordedCompletedCount: 1,
+        executionDataComplete: false,
+        remainingCash: null,
+        valuationPrice: 4,
+        marketValue: null,
+        capitalUtilizationPct: null,
+      },
+      steps: [{
+        ...plan.steps[0],
+        action: 'buy',
+        metric: 'benchmark_drawdown_250d_pct',
+        operator: 'gte',
+        threshold: 5,
+        targetPositionPct: 20,
+        status: 'completed',
+        executionAmount: null,
+      }],
+    };
+    vi.mocked(investmentPlansApi.list).mockResolvedValue({
+      items: [legacyPlan],
+      total: 1,
+      summary: { active: 0, triggered: 0, blocked: 0, reviewDue: 0, dataMissing: 0 },
+    });
+
+    render(<MemoryRouter><InvestmentPlansPage /></MemoryRouter>);
+
+    fireEvent.change(screen.getByLabelText('状态'), { target: { value: 'closed' } });
+    expect(await screen.findByText('旧版成交记录待补录')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '补录成交' }));
+    fireEvent.change(screen.getByLabelText('成交份额'), { target: { value: '5000' } });
+    fireEvent.click(screen.getByRole('button', { name: '确认登记' }));
+    await waitFor(() => expect(investmentPlansApi.recordStepExecution).toHaveBeenCalledWith(
+      1,
+      11,
+      expect.objectContaining({ price: 4, quantity: 5000 }),
+    ));
+  });
+
+  it('suggests an unbound ETF fill from current plan equity and market value', async () => {
+    const addPlan: InvestmentPlanItem = {
+      ...plan,
+      symbol: '510300',
+      strategyType: 'index_crash',
+      strategyLabel: '指数大跌',
+      plannedCapital: 100000,
+      lastPrice: 10,
+      executionSummary: {
+        ...plan.executionSummary,
+        plannedCapital: 100000,
+        executionDataComplete: true,
+        totalQuantity: 1000,
+        grossAmount: 20000,
+        totalCost: 20000,
+        remainingCash: 80000,
+        valuationPrice: 10,
+        marketValue: 10000,
+        capitalUtilizationPct: 11.1111,
+      },
+      steps: [{
+        ...plan.steps[0],
+        action: 'add',
+        metric: 'benchmark_drawdown_250d_pct',
+        operator: 'gte',
+        threshold: 10,
+        targetPositionPct: 40,
+      }],
+    };
+    vi.mocked(investmentPlansApi.list).mockResolvedValue({
+      items: [addPlan],
+      total: 1,
+      summary: { active: 1, triggered: 1, blocked: 0, reviewDue: 0, dataMissing: 0 },
+    });
+
+    render(<MemoryRouter><InvestmentPlansPage /></MemoryRouter>);
+
+    fireEvent.click(await screen.findByRole('button', { name: '登记买入' }));
+    expect(screen.getByText(/建议新增投入约 CNY 26,000/)).toBeInTheDocument();
+    expect(screen.getByLabelText('成交份额')).toHaveValue(2600);
+  });
+
+  it('labels plan and execution amounts in each market local currency', async () => {
+    const hkPlan: InvestmentPlanItem = {
+      ...plan,
+      id: 2,
+      symbol: 'HK02800',
+      market: 'hk',
+      name: '盈富基金计划',
+      strategyType: 'index_crash',
+      strategyLabel: '指数大跌',
+      plannedCapital: 1000,
+      executionSummary: {
+        ...plan.executionSummary,
+        plannedCapital: 1000,
+        completedExecutionCount: 1,
+        totalCost: 200,
+        remainingCash: 800,
+        unrealizedPnl: 50,
+      },
+      steps: [{
+        ...plan.steps[0],
+        id: 21,
+        planId: 2,
+        status: 'completed',
+        executionAmount: 200,
+        executionFee: 2,
+      }],
+    };
+    const usPlan: InvestmentPlanItem = {
+      ...hkPlan,
+      id: 3,
+      symbol: 'SPY',
+      market: 'us',
+      name: 'SPY计划',
+      plannedCapital: 2000,
+      executionSummary: {
+        ...hkPlan.executionSummary,
+        plannedCapital: 2000,
+        totalCost: 500,
+        remainingCash: 1500,
+        unrealizedPnl: -20,
+      },
+      steps: [{
+        ...hkPlan.steps[0],
+        id: 31,
+        planId: 3,
+        executionAmount: 500,
+        executionFee: 1,
+      }],
+    };
+    vi.mocked(investmentPlansApi.list).mockResolvedValue({
+      items: [hkPlan, usPlan],
+      total: 2,
+      summary: { active: 2, triggered: 0, blocked: 0, reviewDue: 0, dataMissing: 0 },
+    });
+
+    render(<MemoryRouter><InvestmentPlansPage /></MemoryRouter>);
+
+    expect(await screen.findByText('HKD（市场本币）')).toBeInTheDocument();
+    expect(screen.getByText('USD（市场本币）')).toBeInTheDocument();
+    expect(screen.getAllByText('HKD 1,000').length).toBeGreaterThan(0);
+    expect(screen.getByText('HKD 800')).toBeInTheDocument();
+    expect(screen.getByText('金额 HKD 200')).toBeInTheDocument();
+    expect(screen.getByText('手续费 HKD 2')).toBeInTheDocument();
+    expect(screen.getAllByText('USD 2,000').length).toBeGreaterThan(0);
+    expect(screen.getByText('USD 1,500')).toBeInTheDocument();
+    expect(screen.getByText('金额 USD 500')).toBeInTheDocument();
+    expect(screen.getByText('手续费 USD 1')).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole('button', { name: '设置' })[0]);
+    expect(screen.getAllByLabelText('计划资金').some((input) => input.hasAttribute('disabled'))).toBe(true);
+    expect(screen.getByText(/仍按 HKD 市场本币计价/)).toBeInTheDocument();
+  });
+
+  it('does not suggest a fill amount for an account-bound ETF plan', async () => {
+    const boundPlan: InvestmentPlanItem = {
+      ...plan,
+      accountId: 9,
+      symbol: '510300',
+      market: 'us',
+      strategyType: 'index_crash',
+      strategyLabel: '指数大跌',
+      plannedCapital: 100000,
+      lastPrice: 10,
+      executionSummary: {
+        ...plan.executionSummary,
+        plannedCapital: 100000,
+        executionDataComplete: true,
+        remainingCash: 100000,
+        valuationPrice: 10,
+        marketValue: 0,
+        capitalUtilizationPct: 0,
+      },
+      steps: [{
+        ...plan.steps[0],
+        metric: 'benchmark_drawdown_250d_pct',
+        operator: 'gte',
+        threshold: 5,
+        targetPositionPct: 20,
+      }],
+    };
+    vi.mocked(investmentPlansApi.list).mockResolvedValue({
+      items: [boundPlan],
+      total: 1,
+      summary: { active: 1, triggered: 1, blocked: 0, reviewDue: 0, dataMissing: 0 },
+    });
+
+    render(<MemoryRouter><InvestmentPlansPage /></MemoryRouter>);
+
+    fireEvent.click(await screen.findByRole('button', { name: '登记买入' }));
+    expect(screen.getByText(/本页不自动建议金额/)).toBeInTheDocument();
+    expect(screen.getByLabelText('手续费（USD）')).toBeInTheDocument();
+    expect(screen.getByLabelText('成交份额')).toHaveValue(null);
   });
 
   it('reconciles a timed-out check when the backend already stored a newer result', async () => {

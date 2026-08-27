@@ -26,9 +26,46 @@ export interface InvestmentPlanStepItem extends InvestmentPlanStepInput {
   status: InvestmentPlanStepStatus;
   triggeredAt?: string | null;
   completedAt?: string | null;
+  executionDate?: string | null;
+  executionAt?: string | null;
+  executionPrice?: number | null;
+  executionQuantity?: number | null;
+  executionAmount?: number | null;
+  executionFee?: number | null;
+  executionNote?: string | null;
   notifiedAt?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+}
+
+export interface InvestmentPlanExecutionSummary {
+  completedExecutionCount: number;
+  unrecordedCompletedCount: number;
+  executionDataComplete: boolean;
+  plannedCapital?: number | null;
+  totalQuantity: number;
+  grossAmount: number;
+  totalFees: number;
+  totalCost: number;
+  averageCost?: number | null;
+  remainingCash?: number | null;
+  valuationPrice?: number | null;
+  valuationPriceSource?: 'plan_check' | 'latest_execution' | null;
+  valuationAsOfDate?: string | null;
+  marketValue?: number | null;
+  unrealizedPnl?: number | null;
+  returnPct?: number | null;
+  targetPositionPct?: number | null;
+  capitalUtilizationPct?: number | null;
+  targetDeviationPct?: number | null;
+}
+
+export interface InvestmentPlanExecutionRequest {
+  executionAt: string;
+  price: number;
+  quantity: number;
+  fee?: number;
+  note?: string | null;
 }
 
 export interface InvestmentPlanItem {
@@ -43,6 +80,7 @@ export interface InvestmentPlanItem {
   thesis: string;
   invalidationNote: string;
   benchmarkSymbol?: string | null;
+  plannedCapital?: number | null;
   maxPositionPct?: number | null;
   requiredCashPct?: number | null;
   reviewDate?: string | null;
@@ -59,6 +97,7 @@ export interface InvestmentPlanItem {
   createdAt?: string | null;
   updatedAt?: string | null;
   steps: InvestmentPlanStepItem[];
+  executionSummary: InvestmentPlanExecutionSummary;
 }
 
 export interface InvestmentPlanCreateRequest {
@@ -71,6 +110,7 @@ export interface InvestmentPlanCreateRequest {
   thesis: string;
   invalidationNote: string;
   benchmarkSymbol?: string | null;
+  plannedCapital?: number | null;
   maxPositionPct?: number | null;
   requiredCashPct?: number | null;
   reviewDate?: string | null;

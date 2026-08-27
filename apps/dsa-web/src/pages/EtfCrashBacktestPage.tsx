@@ -229,6 +229,7 @@ const EtfCrashBacktestPage: React.FC = () => {
         thesis: `基于 ${result.effectiveStartDate} 至 ${result.effectiveEndDate} 的本地日线回测，分档策略收益 ${result.totalReturnPct.toFixed(2)}%，最大回撤 ${result.maxDrawdownPct.toFixed(2)}%；滚动稳健性验证 ${robustnessResult.summary.passedWindows}/${robustnessResult.summary.totalWindows} 个窗口通过。`,
         invalidationNote: 'ETF 停止跟踪目标指数、流动性显著恶化或回撤数据过期时暂停执行，并由人工重新评估。',
         benchmarkSymbol: result.symbol,
+        plannedCapital: lastRequest.initialCapital,
         maxPositionPct: finalTarget,
         requiredCashPct: Math.max(0, 100 - finalTarget),
         notifyOnTrigger: true,

@@ -7,7 +7,7 @@ import json
 import logging
 import math
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from data_provider import is_us_index_code, is_us_stock_code
@@ -102,6 +102,7 @@ class InvestmentPlanService:
         account_id: Optional[int] = None,
         name: Optional[str] = None,
         benchmark_symbol: Optional[str] = None,
+        planned_capital: Optional[float] = None,
         max_position_pct: Optional[float] = None,
         required_cash_pct: Optional[float] = None,
         review_date: Optional[date] = None,
@@ -130,6 +131,10 @@ class InvestmentPlanService:
             "thesis": self._require_text(thesis, "thesis", 4000),
             "invalidation_note": self._require_text(invalidation_note, "invalidation_note", 4000),
             "benchmark_symbol": normalized_benchmark,
+            "planned_capital": self._optional_positive(
+                planned_capital,
+                "planned_capital",
+            ),
             "max_position_pct": self._optional_pct(max_position_pct, "max_position_pct"),
             "required_cash_pct": self._optional_pct(required_cash_pct, "required_cash_pct"),
             "review_date": review_date,
@@ -203,9 +208,14 @@ class InvestmentPlanService:
         if "name" in fields:
             normalized["name"] = self._clean_optional_text(fields.get("name"), 64)
         if "strategy_type" in fields and fields.get("strategy_type") is not None:
-            normalized["strategy_type"] = self._normalize_choice(
+            next_strategy_type = self._normalize_choice(
                 fields["strategy_type"], STRATEGY_TYPES, "strategy_type"
             )
+            if next_strategy_type != current["strategy_type"] and current["status"] != "draft":
+                raise InvestmentPlanStateError(
+                    "strategy_type cannot change after a plan has been activated"
+                )
+            normalized["strategy_type"] = next_strategy_type
         if "thesis" in fields and fields.get("thesis") is not None:
             normalized["thesis"] = self._require_text(fields["thesis"], "thesis", 4000)
         if "invalidation_note" in fields and fields.get("invalidation_note") is not None:
@@ -214,6 +224,19 @@ class InvestmentPlanService:
             )
         if "benchmark_symbol" in fields:
             normalized["benchmark_symbol"] = self._normalize_optional_symbol(fields.get("benchmark_symbol"))
+        if "planned_capital" in fields:
+            next_planned_capital = self._optional_positive(
+                fields.get("planned_capital"),
+                "planned_capital",
+            )
+            if (
+                any(step.get("execution_amount") is not None for step in current["steps"])
+                and next_planned_capital != current.get("planned_capital")
+            ):
+                raise InvestmentPlanStateError(
+                    "planned_capital cannot change after an execution has been recorded"
+                )
+            normalized["planned_capital"] = next_planned_capital
         if "max_position_pct" in fields:
             normalized["max_position_pct"] = self._optional_pct(
                 fields.get("max_position_pct"), "max_position_pct"
@@ -301,6 +324,14 @@ class InvestmentPlanService:
         }
         if target == step["status"]:
             return current
+        if (
+            target == "completed"
+            and current["strategy_type"] == "index_crash"
+            and step["action"] in {"buy", "add"}
+        ):
+            raise InvestmentPlanStateError(
+                "Record the manual execution details before completing this ETF step"
+            )
         if target not in allowed[step["status"]]:
             raise InvestmentPlanStateError(
                 f"Cannot transition investment plan step from {step['status']} to {target}"
@@ -311,6 +342,95 @@ class InvestmentPlanService:
             target,
             expected_plan_status=current["status"],
             expected_step_status=step["status"],
+            expected_updated_at=current.get("updated_at"),
+        )
+        if updated is None:
+            raise InvestmentPlanNotFoundError("Investment plan or step not found")
+        return self._decorate_plan(updated)
+
+    def record_step_execution(
+        self,
+        plan_id: int,
+        step_id: int,
+        *,
+        execution_at: datetime,
+        price: float,
+        quantity: float,
+        fee: float = 0.0,
+        note: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Record a user-confirmed ETF fill and complete its triggered plan step."""
+        current = self.get_plan(plan_id)
+        if current["strategy_type"] != "index_crash":
+            raise InvestmentPlanStateError(
+                "Manual execution records currently support index-crash plans only"
+            )
+        step = next((item for item in current["steps"] if int(item["id"]) == step_id), None)
+        if step is None:
+            raise InvestmentPlanNotFoundError("Investment plan step not found")
+        is_legacy_backfill = (
+            step["status"] == "completed"
+            and step.get("execution_amount") is None
+        )
+        if current["status"] == "closed" and not is_legacy_backfill:
+            raise InvestmentPlanStateError("Closed plans cannot record new executions")
+        if step["status"] != "triggered" and not is_legacy_backfill:
+            raise InvestmentPlanStateError(
+                "Only a triggered or legacy unrecorded completed step can record an execution"
+            )
+        if step["action"] not in {"buy", "add"}:
+            raise InvestmentPlanStateError("Only buy and add steps can record an ETF execution")
+        if (
+            step["status"] == "triggered"
+            and current["execution_summary"]["unrecorded_completed_count"] > 0
+        ):
+            raise InvestmentPlanStateError(
+                "Backfill legacy completed ETF steps before recording a new execution"
+            )
+
+        planned_capital = self._finite_positive(current.get("planned_capital"))
+        if planned_capital is None and not is_legacy_backfill:
+            raise InvestmentPlanStateError(
+                "Set planned_capital before recording an ETF execution"
+            )
+        normalized_execution_at = self._normalize_execution_at(execution_at)
+        triggered_at = str(step.get("triggered_at") or "")
+        if (
+            triggered_at
+            and normalized_execution_at + timedelta(seconds=1) < datetime.fromisoformat(triggered_at)
+        ):
+            raise ValueError("execution_at cannot be earlier than the step trigger time")
+        normalized_price = self._finite_positive(price)
+        if normalized_price is None:
+            raise ValueError("price must be a finite number greater than 0")
+        normalized_quantity = self._finite_positive(quantity)
+        if normalized_quantity is None:
+            raise ValueError("quantity must be a finite number greater than 0")
+        normalized_fee = self._finite_number(fee)
+        if normalized_fee is None or normalized_fee < 0:
+            raise ValueError("fee must be a finite number greater than or equal to 0")
+        execution_amount = round(normalized_price * normalized_quantity, 6)
+        prior_cost = float(current["execution_summary"]["total_cost"] or 0.0)
+        if (
+            planned_capital is not None
+            and prior_cost + execution_amount + normalized_fee > planned_capital + 0.01
+        ):
+            raise InvestmentPlanStateError(
+                "This execution exceeds the plan's remaining cash"
+            )
+
+        updated = self.repo.record_step_execution(
+            plan_id,
+            step_id,
+            execution_date=normalized_execution_at.date(),
+            execution_at=normalized_execution_at,
+            execution_price=normalized_price,
+            execution_quantity=normalized_quantity,
+            execution_amount=execution_amount,
+            execution_fee=normalized_fee,
+            execution_note=self._clean_optional_text(note, 255),
+            max_total_cost=planned_capital,
+            expected_plan_status=current["status"],
             expected_updated_at=current.get("updated_at"),
         )
         if updated is None:
@@ -351,7 +471,11 @@ class InvestmentPlanService:
             step for step in pending_steps
             if self._matches(step, metric_values.get(step["metric"]))
         ]
-        constraints = self._load_constraints(plan)
+        constraints = self._load_constraints({
+            **plan,
+            "last_price": current_price,
+            "last_evaluated_at": evaluated_at.isoformat(),
+        })
         current_position = constraints.get("position_pct")
         target_suppressed_steps = [
             step for step in condition_matched_steps
@@ -606,6 +730,18 @@ class InvestmentPlanService:
     def _load_constraints(self, plan: Dict[str, Any]) -> Dict[str, Any]:
         account_id = plan.get("account_id")
         if account_id is None:
+            summary = self._execution_summary(plan)
+            if summary["planned_capital"] is not None:
+                equity = float(summary["remaining_cash"] or 0.0) + float(
+                    summary["market_value"] or 0.0
+                )
+                return {
+                    "position_pct": summary["capital_utilization_pct"],
+                    "cash_pct": round(float(summary["remaining_cash"] or 0.0) / equity * 100.0, 4)
+                    if equity > 0
+                    else None,
+                    "reliable": True,
+                }
             return {"position_pct": None, "cash_pct": None, "reliable": True}
         try:
             snapshot = self.portfolio_service.get_portfolio_snapshot(account_id=int(account_id))
@@ -850,8 +986,8 @@ class InvestmentPlanService:
             ),
         }
 
-    @staticmethod
-    def _decorate_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
+    @classmethod
+    def _decorate_plan(cls, plan: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(plan)
         payload["strategy_label"] = STRATEGY_LABELS.get(plan["strategy_type"], plan["strategy_type"])
         payload["review_due"] = bool(
@@ -860,7 +996,149 @@ class InvestmentPlanService:
         payload["triggered_step_count"] = sum(
             step["status"] == "triggered" for step in plan.get("steps", [])
         )
+        payload["execution_summary"] = cls._execution_summary(plan)
         return payload
+
+    @classmethod
+    def _execution_summary(cls, plan: Dict[str, Any]) -> Dict[str, Any]:
+        completed_buy_steps = [
+            step
+            for step in plan.get("steps", [])
+            if step.get("status") == "completed" and step.get("action") in {"buy", "add"}
+        ]
+        executions = [
+            step
+            for step in completed_buy_steps
+            if cls._finite_positive(step.get("execution_quantity")) is not None
+            and cls._finite_positive(step.get("execution_amount")) is not None
+        ]
+        unrecorded_completed_count = len(completed_buy_steps) - len(executions)
+        execution_data_complete = unrecorded_completed_count == 0
+        planned_capital = cls._finite_positive(plan.get("planned_capital"))
+        gross_amount = sum(float(step["execution_amount"]) for step in executions)
+        total_fees = sum(cls._finite_number(step.get("execution_fee")) or 0.0 for step in executions)
+        total_cost = gross_amount + total_fees
+        total_quantity = sum(float(step["execution_quantity"]) for step in executions)
+        def execution_sort_value(step: Dict[str, Any]) -> str:
+            actual_time = str(step.get("execution_at") or "")
+            if actual_time:
+                return actual_time
+            actual_date = str(step.get("execution_date") or "")[:10]
+            return f"{actual_date}T23:59:59.999999" if actual_date else ""
+
+        latest_execution = max(
+            executions,
+            key=lambda step: (
+                execution_sort_value(step),
+                int(step.get("id") or 0),
+            ),
+            default=None,
+        )
+        latest_execution_date = (
+            str(latest_execution.get("execution_date") or "")[:10]
+            if latest_execution
+            else ""
+        )
+        latest_execution_at = (
+            str(latest_execution.get("execution_at") or "")
+            if latest_execution
+            else ""
+        )
+        last_evaluated_at = str(plan.get("last_evaluated_at") or "")
+        checked_price = cls._finite_positive(plan.get("last_price"))
+        if latest_execution is None:
+            check_is_newer = True
+        elif latest_execution_at:
+            check_is_newer = last_evaluated_at > latest_execution_at
+        else:
+            check_is_newer = last_evaluated_at[:10] > latest_execution_date
+        use_checked_price = checked_price is not None and check_is_newer
+        valuation_price = (
+            checked_price
+            if use_checked_price
+            else cls._finite_positive(
+                latest_execution.get("execution_price") if latest_execution else None
+            )
+        )
+        valuation_price_source = (
+            "plan_check"
+            if use_checked_price
+            else "latest_execution" if valuation_price is not None else None
+        )
+        valuation_as_of_date = (
+            last_evaluated_at[:10]
+            if use_checked_price
+            else latest_execution_date or None
+        )
+        market_value = (
+            total_quantity * valuation_price
+            if execution_data_complete and valuation_price is not None
+            else None
+        )
+        remaining_cash = (
+            max(0.0, planned_capital - total_cost)
+            if execution_data_complete and planned_capital is not None
+            else None
+        )
+        average_cost = (
+            total_cost / total_quantity
+            if execution_data_complete and total_quantity > 0
+            else None
+        )
+        unrealized_pnl = market_value - total_cost if market_value is not None and executions else None
+        return_pct = unrealized_pnl / total_cost * 100.0 if unrealized_pnl is not None and total_cost > 0 else None
+        target_values = [
+            float(step["target_position_pct"])
+            for step in completed_buy_steps
+            if step.get("target_position_pct") is not None
+        ]
+        target_position_pct = max(target_values) if target_values else None
+        equity = (
+            remaining_cash + market_value
+            if remaining_cash is not None and market_value is not None
+            else None
+        )
+        capital_utilization_pct = (
+            market_value / equity * 100.0
+            if equity is not None and equity > 0 and market_value is not None
+            else (
+                0.0
+                if execution_data_complete and planned_capital is not None and not executions
+                else None
+            )
+        )
+        target_deviation_pct = (
+            capital_utilization_pct - target_position_pct
+            if plan.get("account_id") is None
+            and capital_utilization_pct is not None
+            and target_position_pct is not None
+            else None
+        )
+
+        def rounded(value: Optional[float], digits: int = 4) -> Optional[float]:
+            return round(value, digits) if value is not None else None
+
+        return {
+            "completed_execution_count": len(executions),
+            "unrecorded_completed_count": unrecorded_completed_count,
+            "execution_data_complete": execution_data_complete,
+            "planned_capital": rounded(planned_capital, 2),
+            "total_quantity": rounded(total_quantity),
+            "gross_amount": rounded(gross_amount, 2),
+            "total_fees": rounded(total_fees, 2),
+            "total_cost": rounded(total_cost, 2),
+            "average_cost": rounded(average_cost),
+            "remaining_cash": rounded(remaining_cash, 2),
+            "valuation_price": rounded(valuation_price),
+            "valuation_price_source": valuation_price_source,
+            "valuation_as_of_date": valuation_as_of_date,
+            "market_value": rounded(market_value, 2),
+            "unrealized_pnl": rounded(unrealized_pnl, 2),
+            "return_pct": rounded(return_pct),
+            "target_position_pct": rounded(target_position_pct),
+            "capital_utilization_pct": rounded(capital_utilization_pct),
+            "target_deviation_pct": rounded(target_deviation_pct),
+        }
 
     @staticmethod
     def _normalize_market(value: str) -> str:
@@ -972,6 +1250,30 @@ class InvestmentPlanService:
     def _finite_positive(cls, value: Any) -> Optional[float]:
         number = cls._finite_number(value)
         return number if number is not None and number > 0 else None
+
+    @classmethod
+    def _optional_positive(cls, value: Any, field: str) -> Optional[float]:
+        if value is None or value == "":
+            return None
+        number = cls._finite_positive(value)
+        if number is None:
+            raise ValueError(f"{field} must be a finite number greater than 0")
+        return number
+
+    @staticmethod
+    def _normalize_execution_at(value: Any) -> datetime:
+        if isinstance(value, datetime):
+            normalized = value
+        else:
+            try:
+                normalized = datetime.fromisoformat(str(value or ""))
+            except ValueError as exc:
+                raise ValueError("execution_at must use an ISO-8601 date and time") from exc
+        if normalized.tzinfo is not None:
+            normalized = normalized.astimezone().replace(tzinfo=None)
+        if normalized > datetime.now():
+            raise ValueError("execution_at cannot be in the future")
+        return normalized
 
     @classmethod
     def _optional_pct(cls, value: Any, field: str) -> Optional[float]:

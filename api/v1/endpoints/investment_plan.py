@@ -13,6 +13,7 @@ from api.v1.schemas.investment_plan import (
     InvestmentPlanBatchEvaluationResponse,
     InvestmentPlanCreateRequest,
     InvestmentPlanEvaluationResponse,
+    InvestmentPlanExecutionRequest,
     InvestmentPlanItem,
     InvestmentPlanListResponse,
     InvestmentPlanStatusRequest,
@@ -194,6 +195,31 @@ def set_step_status(
         return InvestmentPlanItem(**InvestmentPlanService().set_step_status(plan_id, step_id, request.status))
     except Exception as exc:
         _raise_for_plan_error(exc, "Update investment plan step")
+
+
+@router.post(
+    "/{plan_id}/steps/{step_id}/execution",
+    response_model=InvestmentPlanItem,
+    responses={
+        400: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+    },
+    summary="Record a user-confirmed ETF plan execution",
+)
+def record_step_execution(
+    plan_id: int,
+    step_id: int,
+    request: InvestmentPlanExecutionRequest,
+) -> InvestmentPlanItem:
+    try:
+        return InvestmentPlanItem(**InvestmentPlanService().record_step_execution(
+            plan_id,
+            step_id,
+            **request.model_dump(),
+        ))
+    except Exception as exc:
+        _raise_for_plan_error(exc, "Record investment plan execution")
 
 
 @router.post(

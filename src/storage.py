@@ -610,6 +610,7 @@ class InvestmentPlan(Base):
     thesis = Column(Text, nullable=False)
     invalidation_note = Column(Text, nullable=False)
     benchmark_symbol = Column(String(16))
+    planned_capital = Column(Float)
     max_position_pct = Column(Float)
     required_cash_pct = Column(Float)
     review_date = Column(Date, index=True)
@@ -648,6 +649,13 @@ class InvestmentPlanStep(Base):
     status = Column(String(16), nullable=False, default='pending', index=True)
     triggered_at = Column(DateTime)
     completed_at = Column(DateTime)
+    execution_date = Column(Date)
+    execution_at = Column(DateTime)
+    execution_price = Column(Float)
+    execution_quantity = Column(Float)
+    execution_amount = Column(Float)
+    execution_fee = Column(Float)
+    execution_note = Column(String(255))
     notified_at = Column(DateTime)
     notification_claim_token = Column(String(64), index=True)
     notification_claimed_at = Column(DateTime, index=True)
@@ -842,8 +850,16 @@ class DatabaseManager:
             ("investment_plans", "notify_on_trigger", "BOOLEAN NOT NULL DEFAULT 1"),
             ("investment_plans", "notification_channels", "TEXT"),
             ("investment_plans", "check_frequency", "VARCHAR(16) NOT NULL DEFAULT 'daily'"),
+            ("investment_plans", "planned_capital", "FLOAT"),
             ("investment_plan_steps", "notification_claim_token", "VARCHAR(64)"),
             ("investment_plan_steps", "notification_claimed_at", "DATETIME"),
+            ("investment_plan_steps", "execution_date", "DATE"),
+            ("investment_plan_steps", "execution_at", "DATETIME"),
+            ("investment_plan_steps", "execution_price", "FLOAT"),
+            ("investment_plan_steps", "execution_quantity", "FLOAT"),
+            ("investment_plan_steps", "execution_amount", "FLOAT"),
+            ("investment_plan_steps", "execution_fee", "FLOAT"),
+            ("investment_plan_steps", "execution_note", "VARCHAR(255)"),
         )
 
         for table_name, column_name, column_type in column_upgrades:

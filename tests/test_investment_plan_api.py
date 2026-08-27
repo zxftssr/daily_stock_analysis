@@ -7,7 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -232,6 +232,85 @@ class InvestmentPlanApiTestCase(unittest.TestCase):
             json={"status": "skipped"},
         )
         self.assertEqual(response.status_code, 409)
+
+    def test_etf_execution_contract_records_manual_fill_and_review(self) -> None:
+        payload = self._payload()
+        payload.update({
+            "symbol": "510300",
+            "name": "华泰柏瑞沪深300ETF",
+            "strategy_type": "index_crash",
+            "planned_capital": 100000,
+            "max_position_pct": 20,
+            "steps": [{
+                "action": "buy",
+                "metric": "price",
+                "operator": "lte",
+                "threshold": 10,
+                "target_position_pct": 20,
+            }],
+        })
+        created = self.client.post("/api/v1/investment-plans", json=payload)
+        self.assertEqual(created.status_code, 200, created.text)
+        plan = created.json()
+        self.assertEqual(plan["planned_capital"], 100000)
+        changed_strategy = self.client.put(
+            f"/api/v1/investment-plans/{plan['id']}",
+            json={"strategy_type": "value"},
+        )
+        self.assertEqual(changed_strategy.status_code, 409)
+
+        with patch(
+            "src.services.stock_service.StockService.get_realtime_quote",
+            return_value={
+                "stock_code": "510300",
+                "stock_name": "华泰柏瑞沪深300ETF",
+                "current_price": 10,
+                "price_date": date.today().isoformat(),
+            },
+        ):
+            evaluated = self.client.post(
+                f"/api/v1/investment-plans/{plan['id']}/evaluate"
+            )
+        self.assertEqual(evaluated.status_code, 200, evaluated.text)
+        step_id = evaluated.json()["plan"]["steps"][0]["id"]
+
+        completed_without_fill = self.client.patch(
+            f"/api/v1/investment-plans/{plan['id']}/steps/{step_id}",
+            json={"status": "completed"},
+        )
+        self.assertEqual(completed_without_fill.status_code, 409)
+
+        for invalid_execution_at in (
+            date.today().isoformat(),
+            datetime.now().replace(microsecond=0).isoformat(),
+        ):
+            invalid_execution = self.client.post(
+                f"/api/v1/investment-plans/{plan['id']}/steps/{step_id}/execution",
+                json={
+                    "execution_at": invalid_execution_at,
+                    "price": 10,
+                    "quantity": 2000,
+                },
+            )
+            self.assertEqual(invalid_execution.status_code, 422, invalid_execution.text)
+
+        execution = self.client.post(
+            f"/api/v1/investment-plans/{plan['id']}/steps/{step_id}/execution",
+            json={
+                "execution_at": datetime.now().astimezone().replace(microsecond=0).isoformat(),
+                "price": 10,
+                "quantity": 2000,
+                "fee": 5,
+                "note": "真实成交",
+            },
+        )
+        self.assertEqual(execution.status_code, 200, execution.text)
+        body = execution.json()
+        self.assertEqual(body["steps"][0]["execution_amount"], 20000)
+        self.assertIsNotNone(body["steps"][0]["execution_at"])
+        self.assertEqual(body["steps"][0]["status"], "completed")
+        self.assertEqual(body["execution_summary"]["total_cost"], 20005)
+        self.assertEqual(body["execution_summary"]["remaining_cash"], 79995)
 
     def test_plain_numeric_hk_symbol_is_normalized_for_create_and_list(self) -> None:
         payload = self._payload()

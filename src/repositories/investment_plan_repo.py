@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import json
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -194,9 +194,88 @@ class InvestmentPlanRepository:
             if status == "pending":
                 step.triggered_at = None
                 step.completed_at = None
+                step.execution_date = None
+                step.execution_at = None
+                step.execution_price = None
+                step.execution_quantity = None
+                step.execution_amount = None
+                step.execution_fee = None
+                step.execution_note = None
                 step.notified_at = None
             elif status in {"completed", "skipped"}:
                 step.completed_at = now
+            step.updated_at = now
+            plan.updated_at = now
+            session.flush()
+            return self._plan_to_dict(plan, self._list_steps_in_session(session, plan_id))
+
+    def record_step_execution(
+        self,
+        plan_id: int,
+        step_id: int,
+        *,
+        execution_date: date,
+        execution_at: datetime,
+        execution_price: float,
+        execution_quantity: float,
+        execution_amount: float,
+        execution_fee: float,
+        execution_note: Optional[str],
+        max_total_cost: Optional[float],
+        expected_plan_status: str,
+        expected_updated_at: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        """Complete one triggered step while atomically recording its manual fill."""
+        with self.write_session() as session:
+            plan = session.execute(
+                select(InvestmentPlan).where(InvestmentPlan.id == plan_id).limit(1)
+            ).scalar_one_or_none()
+            if plan is None:
+                return None
+            if plan.status != expected_plan_status:
+                raise InvestmentPlanConflictError("Investment plan status changed; reload and retry")
+            if expected_updated_at and self._datetime_to_str(plan.updated_at) != expected_updated_at:
+                raise InvestmentPlanConflictError("Investment plan changed; reload and retry")
+            step = session.execute(
+                select(InvestmentPlanStep).where(
+                    and_(InvestmentPlanStep.id == step_id, InvestmentPlanStep.plan_id == plan_id)
+                ).limit(1)
+            ).scalar_one_or_none()
+            if step is None:
+                return None
+            is_legacy_backfill = step.status == "completed" and step.execution_amount is None
+            if plan.status == "closed" and not is_legacy_backfill:
+                raise InvestmentPlanConflictError("Closed plans cannot record new executions")
+            if step.status != "triggered" and not is_legacy_backfill:
+                raise InvestmentPlanConflictError(
+                    "Only a triggered or legacy unrecorded completed step can record execution"
+                )
+            existing_cost = sum(
+                float(item.execution_amount or 0.0) + float(item.execution_fee or 0.0)
+                for item in self._list_steps_in_session(session, plan_id)
+                if item.status == "completed" and item.execution_amount is not None
+            )
+            if (
+                max_total_cost is not None
+                and existing_cost + execution_amount + execution_fee > max_total_cost + 0.01
+            ):
+                raise InvestmentPlanConflictError(
+                    "This execution exceeds the plan's remaining cash; reload and retry"
+                )
+
+            now = datetime.now()
+            step.status = "completed"
+            if step.completed_at is None:
+                step.completed_at = now
+            step.execution_date = execution_date
+            step.execution_at = execution_at
+            step.execution_price = execution_price
+            step.execution_quantity = execution_quantity
+            step.execution_amount = execution_amount
+            step.execution_fee = execution_fee
+            step.execution_note = execution_note
+            step.notification_claim_token = None
+            step.notification_claimed_at = None
             step.updated_at = now
             plan.updated_at = now
             session.flush()
@@ -388,6 +467,7 @@ class InvestmentPlanRepository:
             "thesis": row.thesis,
             "invalidation_note": row.invalidation_note,
             "benchmark_symbol": row.benchmark_symbol,
+            "planned_capital": row.planned_capital,
             "max_position_pct": row.max_position_pct,
             "required_cash_pct": row.required_cash_pct,
             "review_date": row.review_date.isoformat() if row.review_date else None,
@@ -422,6 +502,19 @@ class InvestmentPlanRepository:
             "status": row.status,
             "triggered_at": row.triggered_at.isoformat() if row.triggered_at else None,
             "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+            "execution_date": row.execution_date.isoformat() if row.execution_date else None,
+            "execution_at": row.execution_at.isoformat() if row.execution_at else None,
+            "execution_price": (
+                float(row.execution_price) if row.execution_price is not None else None
+            ),
+            "execution_quantity": (
+                float(row.execution_quantity) if row.execution_quantity is not None else None
+            ),
+            "execution_amount": (
+                float(row.execution_amount) if row.execution_amount is not None else None
+            ),
+            "execution_fee": float(row.execution_fee) if row.execution_fee is not None else None,
+            "execution_note": row.execution_note,
             "notified_at": row.notified_at.isoformat() if row.notified_at else None,
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
