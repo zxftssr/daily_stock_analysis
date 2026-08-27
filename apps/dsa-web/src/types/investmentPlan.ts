@@ -109,6 +109,7 @@ export interface InvestmentPlanEvaluationResponse {
   notification: {
     attempted?: boolean;
     sent?: boolean;
+    queued?: boolean;
     stepCount?: number;
   };
 }
@@ -121,6 +122,7 @@ export interface InvestmentPlanBatchEvaluationResponse {
   notification: {
     attempted?: boolean;
     sent?: boolean;
+    queued?: boolean;
     stepCount?: number;
   };
 }

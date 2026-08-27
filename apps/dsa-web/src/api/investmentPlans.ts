@@ -20,6 +20,9 @@ type ListQuery = {
   accountId?: number;
 };
 
+const PLAN_EVALUATION_TIMEOUT_MS = 90_000;
+const PLAN_BATCH_EVALUATION_TIMEOUT_MS = 180_000;
+
 const serializeStep = (step: InvestmentPlanStepInput) => ({
   action: step.action,
   metric: step.metric,
@@ -107,7 +110,7 @@ export const investmentPlansApi = {
     const response = await apiClient.post<Record<string, unknown>>(
       `/api/v1/investment-plans/${planId}/evaluate`,
       undefined,
-      { params: { notify } },
+      { params: { notify }, timeout: PLAN_EVALUATION_TIMEOUT_MS },
     );
     return toCamelCase<InvestmentPlanEvaluationResponse>(response.data);
   },
@@ -116,7 +119,7 @@ export const investmentPlansApi = {
     const response = await apiClient.post<Record<string, unknown>>(
       '/api/v1/investment-plans/evaluate-active',
       undefined,
-      { params: { notify } },
+      { params: { notify }, timeout: PLAN_BATCH_EVALUATION_TIMEOUT_MS },
     );
     return toCamelCase<InvestmentPlanBatchEvaluationResponse>(response.data);
   },

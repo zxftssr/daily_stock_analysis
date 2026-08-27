@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.investment_plan import (
@@ -29,6 +29,19 @@ from src.services.investment_plan_service import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _send_pending_plan_notifications(plan_ids: list[int]) -> None:
+    """Send queued plan notifications after the HTTP response has completed."""
+    try:
+        InvestmentPlanService().send_pending_notifications(plan_ids=plan_ids)
+    except Exception as exc:
+        logger.warning(
+            "Send queued investment plan notifications failed plan_ids=%s: %s",
+            plan_ids,
+            exc,
+            exc_info=True,
+        )
 
 
 def _raise_for_plan_error(exc: Exception, operation: str) -> None:
@@ -99,12 +112,24 @@ def list_plans(
     summary="Evaluate every active investment plan",
 )
 def evaluate_active_plans(
+    background_tasks: BackgroundTasks,
     notify: bool = Query(False, description="Send alert-routed notifications for unnotified triggered steps"),
 ) -> InvestmentPlanBatchEvaluationResponse:
     try:
-        return InvestmentPlanBatchEvaluationResponse(
-            **InvestmentPlanService().evaluate_active_plans(send_notification=notify)
-        )
+        payload = InvestmentPlanService().evaluate_active_plans(send_notification=False)
+        evaluated_plan_ids = [int(item["plan"]["id"]) for item in payload["results"]]
+        if notify and evaluated_plan_ids:
+            background_tasks.add_task(
+                _send_pending_plan_notifications,
+                evaluated_plan_ids,
+            )
+            payload["notification"] = {
+                "attempted": False,
+                "sent": False,
+                "queued": True,
+                "step_count": int(payload["triggered"]),
+            }
+        return InvestmentPlanBatchEvaluationResponse(**payload)
     except Exception as exc:
         _raise_for_plan_error(exc, "Evaluate active investment plans")
 
@@ -179,11 +204,22 @@ def set_step_status(
 )
 def evaluate_plan(
     plan_id: int,
+    background_tasks: BackgroundTasks,
     notify: bool = Query(False, description="Send a notification when this check newly triggers a step"),
 ) -> InvestmentPlanEvaluationResponse:
     try:
-        return InvestmentPlanEvaluationResponse(
-            **InvestmentPlanService().evaluate_plan(plan_id, send_notification=notify)
-        )
+        payload = InvestmentPlanService().evaluate_plan(plan_id, send_notification=False)
+        if notify:
+            background_tasks.add_task(
+                _send_pending_plan_notifications,
+                [plan_id],
+            )
+            payload["notification"] = {
+                "attempted": False,
+                "sent": False,
+                "queued": True,
+                "step_count": len(payload["newly_triggered_step_ids"]),
+            }
+        return InvestmentPlanEvaluationResponse(**payload)
     except Exception as exc:
         _raise_for_plan_error(exc, "Evaluate investment plan")

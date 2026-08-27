@@ -1041,8 +1041,8 @@ The Yahoo history adapter converts the project's inclusive end date to Yahoo's n
 
 Operators are limited to `lte`, `gte`, and `between`; arbitrary expressions and scripts are not accepted. Each plan can use `daily` (the daily scheduled run), `hourly`, or `manual` checking. Hourly checks run only in schedule mode. Automatic plan evaluation remains independent of AI analysis, market review, and merged report delivery, and it filters plans by open market and configured frequency. Evaluation is fail-open and cannot break reports, notifications, or backtests.
 
-Each plan can also enable or disable trigger notifications. An empty channel selection inherits the global `alert` route, while an explicit selection targets one configured static channel. Automatic checks and single-plan Web checks can notify first-time, not-yet-notified triggers; failed sends remain pending for retry, while successfully delivered steps are not sent again. No order is placed automatically.
-Single-plan checks show a data-insufficient warning and its concrete reasons when conditions could not be validated. Batch checks count data-insufficient results separately from thrown failures instead of presenting an incomplete validation as a successful no-trigger result.
+Each plan can also enable or disable trigger notifications. An empty channel selection inherits the global `alert` route, while an explicit selection targets one configured static channel. Automatic checks and single-plan Web checks can notify first-time, not-yet-notified triggers. A Web check returns its committed evaluation before notification delivery continues after the response, and the UI reports that delivery is queued instead of conflating it with the evaluation result. Failed sends remain pending for retry, while successfully delivered steps are not sent again. No order is placed automatically.
+Single-plan checks use a dedicated 90-second request timeout and batch checks use 180 seconds. A single-plan check starts only after reading a fresh evaluation timestamp as its baseline. If the browser times out before the backend commits, the action becomes **Reconfirm**, which reads state without starting another evaluation. Once a newer `lastEvaluatedAt` is observed, both the single and batch controls recover in the current page. Checks still show a data-insufficient warning and concrete reasons when conditions could not be validated. Batch checks count data-insufficient results separately from thrown failures instead of presenting an incomplete validation as a successful no-trigger result.
 
 Evaluation is computed from a plan snapshot. If another request edits the plan or any step while market/portfolio data is being loaded, the stale result is rejected atomically instead of overwriting the newer state.
 
@@ -1059,8 +1059,8 @@ Main APIs:
 | `/api/v1/investment-plans/{id}` | GET/PUT | Read or update one plan |
 | `/api/v1/investment-plans/{id}/status` | PATCH | Activate, pause, or close a plan |
 | `/api/v1/investment-plans/{id}/steps/{step_id}` | PATCH | Complete or skip a triggered step, or reset it before execution |
-| `/api/v1/investment-plans/{id}/evaluate?notify=false` | POST | Manually evaluate one active plan; `notify=true` uses that plan's notification settings |
-| `/api/v1/investment-plans/evaluate-active?notify=false` | POST | Evaluate all active plans; only `notify=true` attempts alert delivery |
+| `/api/v1/investment-plans/{id}/evaluate?notify=false` | POST | Manually evaluate one active plan; with `notify=true`, evaluation returns before notification delivery continues |
+| `/api/v1/investment-plans/evaluate-active?notify=false` | POST | Evaluate all active plans; with `notify=true`, evaluation returns before alert delivery continues |
 
 ---
 

@@ -21,6 +21,7 @@ except ModuleNotFoundError:
 import src.auth as auth
 from api.app import create_app
 from src.config import Config
+from src.services.investment_plan_service import InvestmentPlanService
 from src.storage import DatabaseManager
 
 
@@ -147,6 +148,68 @@ class InvestmentPlanApiTestCase(unittest.TestCase):
         too_many_channels["notification_channels"] = ["wechat", "custom"]
         response = self.client.post("/api/v1/investment-plans", json=too_many_channels)
         self.assertEqual(response.status_code, 422)
+
+    def test_manual_evaluation_queues_notification_after_response(self) -> None:
+        created = self.client.post("/api/v1/investment-plans", json=self._payload())
+        self.assertEqual(created.status_code, 200, created.text)
+        plan_id = created.json()["id"]
+
+        with patch(
+            "src.services.stock_service.StockService.get_realtime_quote",
+            return_value={
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "current_price": 1350,
+                "price_date": date.today().isoformat(),
+            },
+        ), patch.object(
+            InvestmentPlanService,
+            "send_pending_notifications",
+            return_value={"attempted": True, "sent": True, "step_count": 1},
+        ) as send_notifications:
+            evaluated = self.client.post(
+                f"/api/v1/investment-plans/{plan_id}/evaluate",
+                params={"notify": "true"},
+            )
+
+        self.assertEqual(evaluated.status_code, 200, evaluated.text)
+        notification = evaluated.json()["notification"]
+        self.assertTrue(notification["queued"])
+        self.assertFalse(notification["attempted"])
+        self.assertFalse(notification["sent"])
+        self.assertEqual(notification["step_count"], 1)
+        send_notifications.assert_called_once_with(plan_ids=[plan_id])
+
+    def test_batch_evaluation_queues_notification_after_response(self) -> None:
+        created = self.client.post("/api/v1/investment-plans", json=self._payload())
+        self.assertEqual(created.status_code, 200, created.text)
+        plan_id = created.json()["id"]
+
+        with patch(
+            "src.services.stock_service.StockService.get_realtime_quote",
+            return_value={
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "current_price": 1350,
+                "price_date": date.today().isoformat(),
+            },
+        ), patch.object(
+            InvestmentPlanService,
+            "send_pending_notifications",
+            return_value={"attempted": True, "sent": True, "step_count": 1},
+        ) as send_notifications:
+            evaluated = self.client.post(
+                "/api/v1/investment-plans/evaluate-active",
+                params={"notify": "true"},
+            )
+
+        self.assertEqual(evaluated.status_code, 200, evaluated.text)
+        notification = evaluated.json()["notification"]
+        self.assertTrue(notification["queued"])
+        self.assertFalse(notification["attempted"])
+        self.assertFalse(notification["sent"])
+        self.assertEqual(notification["step_count"], 1)
+        send_notifications.assert_called_once_with(plan_ids=[plan_id])
 
     def test_active_drawdown_plan_requires_benchmark(self) -> None:
         payload = self._payload()

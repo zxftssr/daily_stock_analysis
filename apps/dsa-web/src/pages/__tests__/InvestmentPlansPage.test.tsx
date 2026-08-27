@@ -76,6 +76,7 @@ describe('InvestmentPlansPage', () => {
       summary: { active: 0, triggered: 0, blocked: 0, reviewDue: 0, dataMissing: 0 },
     });
     vi.mocked(investmentPlansApi.create).mockResolvedValue(plan);
+    vi.mocked(investmentPlansApi.get).mockResolvedValue(plan);
     vi.mocked(investmentPlansApi.setStatus).mockResolvedValue(plan);
     vi.mocked(investmentPlansApi.setStepStatus).mockResolvedValue(plan);
     vi.mocked(investmentPlansApi.evaluate).mockResolvedValue({
@@ -168,6 +169,17 @@ describe('InvestmentPlansPage', () => {
       total: 1,
       summary: { active: 1, triggered: 1, blocked: 0, reviewDue: 0, dataMissing: 0 },
     });
+    vi.mocked(investmentPlansApi.evaluate).mockResolvedValue({
+      plan,
+      metricValues: { price: 1350 },
+      matchedStepIds: [11],
+      newlyTriggeredStepIds: [11],
+      constraints: { positionPct: null, cashPct: null },
+      blockedReasons: [],
+      reviewDue: false,
+      errors: [],
+      notification: { attempted: false, sent: false, queued: true, stepCount: 1 },
+    });
     render(
       <MemoryRouter>
         <InvestmentPlansPage />
@@ -181,12 +193,137 @@ describe('InvestmentPlansPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '检查' }));
     await waitFor(() => expect(investmentPlansApi.evaluate).toHaveBeenCalledWith(1, true));
     expect(await screen.findByText('发现新触发条件')).toBeInTheDocument();
+    expect(screen.getByText(/通知已进入后台发送/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '完成' }));
     await waitFor(() => expect(investmentPlansApi.setStepStatus).toHaveBeenCalledWith(1, 11, 'completed'));
 
     fireEvent.click(screen.getByRole('button', { name: '重置' }));
     await waitFor(() => expect(investmentPlansApi.setStepStatus).toHaveBeenCalledWith(1, 11, 'pending'));
+  });
+
+  it('reconciles a timed-out check when the backend already stored a newer result', async () => {
+    const reconciledPlan = {
+      ...plan,
+      lastEvaluatedAt: '2026-08-27T19:26:17',
+      lastEvaluationStatus: 'triggered',
+    };
+    vi.mocked(investmentPlansApi.list).mockResolvedValue({
+      items: [plan],
+      total: 1,
+      summary: { active: 1, triggered: 1, blocked: 0, reviewDue: 0, dataMissing: 0 },
+    });
+    vi.mocked(investmentPlansApi.evaluate).mockRejectedValue(Object.assign(
+      new Error('timeout of 90000ms exceeded'),
+      { code: 'ECONNABORTED' },
+    ));
+    vi.mocked(investmentPlansApi.get)
+      .mockResolvedValueOnce(plan)
+      .mockResolvedValueOnce(reconciledPlan);
+
+    render(
+      <MemoryRouter>
+        <InvestmentPlansPage />
+      </MemoryRouter>,
+    );
+    await screen.findByText('执行轨道');
+    fireEvent.click(screen.getByRole('button', { name: '检查' }));
+
+    await waitFor(() => expect(investmentPlansApi.get).toHaveBeenCalledWith(1));
+    expect(await screen.findByText('检查已在后台完成')).toBeInTheDocument();
+    expect(screen.getByText(/已读取到新的检查结果：存在待处理触发/)).toBeInTheDocument();
+  });
+
+  it('does not treat an evaluation newer than a stale page snapshot as this timed-out check', async () => {
+    const freshBaseline = {
+      ...plan,
+      lastEvaluatedAt: '2026-08-27T18:30:00',
+    };
+    vi.mocked(investmentPlansApi.list).mockResolvedValue({
+      items: [plan],
+      total: 1,
+      summary: { active: 1, triggered: 1, blocked: 0, reviewDue: 0, dataMissing: 0 },
+    });
+    vi.mocked(investmentPlansApi.evaluate).mockRejectedValue(Object.assign(
+      new Error('timeout of 90000ms exceeded'),
+      { code: 'ECONNABORTED' },
+    ));
+    vi.mocked(investmentPlansApi.get).mockResolvedValue(freshBaseline);
+
+    render(
+      <MemoryRouter>
+        <InvestmentPlansPage />
+      </MemoryRouter>,
+    );
+    await screen.findByText('执行轨道');
+    fireEvent.click(screen.getByRole('button', { name: '检查' }));
+
+    await waitFor(() => expect(investmentPlansApi.get).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText('检查已在后台完成')).not.toBeInTheDocument();
+    expect(await screen.findByText(/后台可能仍在处理/)).toBeInTheDocument();
+    const lockedCheck = screen.getByRole('button', { name: '重新确认' });
+    expect(lockedCheck).toBeEnabled();
+    expect(screen.getByRole('button', { name: '检查活跃计划' })).toBeDisabled();
+    fireEvent.click(lockedCheck);
+    expect(await screen.findByText('检查仍在后台处理中')).toBeInTheDocument();
+    expect(investmentPlansApi.evaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it('unlocks a timed-out check after the backend finishes later', async () => {
+    const completedPlan = {
+      ...plan,
+      lastEvaluatedAt: '2026-08-27T19:30:00',
+      lastEvaluationStatus: 'triggered',
+    };
+    vi.mocked(investmentPlansApi.list).mockResolvedValue({
+      items: [completedPlan],
+      total: 1,
+      summary: { active: 1, triggered: 1, blocked: 0, reviewDue: 0, dataMissing: 0 },
+    });
+    vi.mocked(investmentPlansApi.evaluate).mockRejectedValue(Object.assign(
+      new Error('timeout of 90000ms exceeded'),
+      { code: 'ECONNABORTED' },
+    ));
+    vi.mocked(investmentPlansApi.get)
+      .mockResolvedValueOnce(plan)
+      .mockResolvedValueOnce(plan)
+      .mockResolvedValueOnce(completedPlan);
+
+    render(
+      <MemoryRouter>
+        <InvestmentPlansPage />
+      </MemoryRouter>,
+    );
+    await screen.findByText('执行轨道');
+    fireEvent.click(screen.getByRole('button', { name: '检查' }));
+
+    const confirmButton = await screen.findByRole('button', { name: '重新确认' });
+    fireEvent.click(confirmButton);
+
+    expect(await screen.findByText('后台检查已完成')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '检查' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '检查活跃计划' })).toBeEnabled();
+    expect(investmentPlansApi.evaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start an evaluation when the fresh baseline cannot be read', async () => {
+    vi.mocked(investmentPlansApi.list).mockResolvedValue({
+      items: [plan],
+      total: 1,
+      summary: { active: 1, triggered: 1, blocked: 0, reviewDue: 0, dataMissing: 0 },
+    });
+    vi.mocked(investmentPlansApi.get).mockRejectedValue(new Error('baseline unavailable'));
+
+    render(
+      <MemoryRouter>
+        <InvestmentPlansPage />
+      </MemoryRouter>,
+    );
+    await screen.findByText('执行轨道');
+    fireEvent.click(screen.getByRole('button', { name: '检查' }));
+
+    expect(await screen.findByText('无法开始检查')).toBeInTheDocument();
+    expect(investmentPlansApi.evaluate).not.toHaveBeenCalled();
   });
 
   it('warns when a single plan cannot validate conditions because data is missing', async () => {
@@ -270,6 +407,31 @@ describe('InvestmentPlansPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '检查活跃计划' }));
     await waitFor(() => expect(investmentPlansApi.evaluateActive).toHaveBeenCalledWith(false));
     expect(await screen.findByText('活跃计划检查完成')).toBeInTheDocument();
+  });
+
+  it('reports an unknown batch outcome when both checking and refresh time out', async () => {
+    vi.mocked(investmentPlansApi.list)
+      .mockResolvedValueOnce({
+        items: [plan],
+        total: 1,
+        summary: { active: 1, triggered: 1, blocked: 0, reviewDue: 0, dataMissing: 0 },
+      })
+      .mockRejectedValueOnce(Object.assign(new Error('network unavailable'), { code: 'ERR_NETWORK' }));
+    vi.mocked(investmentPlansApi.evaluateActive).mockRejectedValue(Object.assign(
+      new Error('timeout of 180000ms exceeded'),
+      { code: 'ECONNABORTED' },
+    ));
+
+    render(
+      <MemoryRouter>
+        <InvestmentPlansPage />
+      </MemoryRouter>,
+    );
+    await screen.findByText('执行轨道');
+    fireEvent.click(screen.getByRole('button', { name: '检查活跃计划' }));
+
+    expect(await screen.findByText('批量检查状态未知')).toBeInTheDocument();
+    expect(screen.getByText(/检查请求和状态刷新均未完成/)).toBeInTheDocument();
   });
 
   it('removes a plan while preserving the closed status contract', async () => {

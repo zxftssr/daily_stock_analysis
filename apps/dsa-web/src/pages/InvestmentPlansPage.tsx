@@ -138,6 +138,21 @@ const EVALUATION_STATUS_LABELS: Record<string, string> = {
   completed: '档位已处理',
 };
 
+const reconcileTimedOutEvaluation = async (
+  planId: number,
+  baselineLastEvaluatedAt?: string | null,
+) => {
+  try {
+    const current = await investmentPlansApi.get(planId);
+    if (current.lastEvaluatedAt && current.lastEvaluatedAt !== baselineLastEvaluatedAt) {
+      return current;
+    }
+  } catch {
+    // Keep the original timeout visible when reconciliation cannot read the plan.
+  }
+  return null;
+};
+
 type FormStep = {
   key: string;
   action: InvestmentPlanStepAction;
@@ -315,6 +330,9 @@ const InvestmentPlansPage: React.FC = () => {
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [evaluatingId, setEvaluatingId] = useState<number | 'all' | null>(null);
+  const [uncertainEvaluations, setUncertainEvaluations] = useState<Map<number, string | null>>(
+    () => new Map(),
+  );
   const [transitioningId, setTransitioningId] = useState<number | null>(null);
   const [closePlan, setClosePlan] = useState<InvestmentPlanItem | null>(null);
 
@@ -322,18 +340,33 @@ const InvestmentPlansPage: React.FC = () => {
     document.title = '策略计划 - DSA';
   }, []);
 
-  const loadPlans = useCallback(async () => {
+  const loadPlans = useCallback(async (): Promise<boolean> => {
     setLoading(true);
     try {
       const response = await investmentPlansApi.list({
         status: statusFilter ? statusFilter as InvestmentPlanStatus : undefined,
         strategyType: strategyFilter ? strategyFilter as InvestmentStrategyType : undefined,
       });
-      setPlans(response.items || []);
+      const items = response.items || [];
+      setPlans(items);
       setSummary(response.summary || { active: 0, triggered: 0, blocked: 0, reviewDue: 0, dataMissing: 0 });
+      setUncertainEvaluations((current) => {
+        let changed = false;
+        const next = new Map(current);
+        for (const item of items) {
+          const baseline = next.get(item.id);
+          if (next.has(item.id) && item.lastEvaluatedAt && item.lastEvaluatedAt !== baseline) {
+            next.delete(item.id);
+            changed = true;
+          }
+        }
+        return changed ? next : current;
+      });
       setError(null);
+      return true;
     } catch (requestError) {
       setError(getParsedApiError(requestError));
+      return false;
     } finally {
       setLoading(false);
     }
@@ -548,8 +581,24 @@ const InvestmentPlansPage: React.FC = () => {
   };
 
   const evaluateOne = async (plan: InvestmentPlanItem) => {
+    if (uncertainEvaluations.has(plan.id)) return;
     setEvaluatingId(plan.id);
     setNotice(null);
+    setError(null);
+    let baselineLastEvaluatedAt: string | null;
+    try {
+      const latestPlan = await investmentPlansApi.get(plan.id);
+      baselineLastEvaluatedAt = latestPlan.lastEvaluatedAt || null;
+    } catch (requestError) {
+      const parsedError = getParsedApiError(requestError);
+      setError({
+        ...parsedError,
+        title: '无法开始检查',
+        message: '无法读取计划的最新检查基线，本次未发起检查。请稍后重试。',
+      });
+      setEvaluatingId(null);
+      return;
+    }
     try {
       const response = await investmentPlansApi.evaluate(plan.id, plan.notifyOnTrigger);
       if (response.errors.length > 0 || response.plan.lastEvaluationStatus === 'data_missing') {
@@ -565,21 +614,104 @@ const InvestmentPlansPage: React.FC = () => {
           variant: response.newlyTriggeredStepIds.length > 0 ? 'warning' : 'info',
           title: response.newlyTriggeredStepIds.length > 0 ? '发现新触发条件' : '检查完成',
           message: response.newlyTriggeredStepIds.length > 0
-            ? `新触发 ${response.newlyTriggeredStepIds.length} 档${response.notification.sent ? '，通知已发送' : ''}，请核对行情和约束后人工处理。`
+            ? `新触发 ${response.newlyTriggeredStepIds.length} 档${
+              response.notification.sent
+                ? '，通知已发送'
+                : response.notification.queued
+                  ? '，通知已进入后台发送'
+                  : ''
+            }，请核对行情和约束后人工处理。`
             : '当前没有新的待执行步骤。',
         });
       }
+      setUncertainEvaluations((current) => {
+        if (!current.has(plan.id)) return current;
+        const next = new Map(current);
+        next.delete(plan.id);
+        return next;
+      });
       await loadPlans();
     } catch (requestError) {
-      setError(getParsedApiError(requestError));
+      const parsedError = getParsedApiError(requestError);
+      if (parsedError.category === 'upstream_timeout' && parsedError.status == null) {
+        const reconciled = await reconcileTimedOutEvaluation(plan.id, baselineLastEvaluatedAt);
+        if (reconciled) {
+          const statusLabel = reconciled.lastEvaluationStatus
+            ? EVALUATION_STATUS_LABELS[reconciled.lastEvaluationStatus] || reconciled.lastEvaluationStatus
+            : '已完成';
+          setNotice({
+            variant: 'warning',
+            title: '检查已在后台完成',
+            message: `请求等待超时，但已读取到新的检查结果：${statusLabel}。请查看执行轨道确认触发与通知状态。`,
+          });
+          setUncertainEvaluations((current) => {
+            if (!current.has(plan.id)) return current;
+            const next = new Map(current);
+            next.delete(plan.id);
+            return next;
+          });
+          await loadPlans();
+        } else {
+          setUncertainEvaluations((current) => new Map(current).set(plan.id, baselineLastEvaluatedAt));
+          setError({
+            ...parsedError,
+            message: '请求等待超时，后台可能仍在处理。请勿重复检查，稍后点击“重新确认”读取最新状态。',
+          });
+        }
+      } else {
+        setError(parsedError);
+      }
+    } finally {
+      setEvaluatingId(null);
+    }
+  };
+
+  const confirmUncertainEvaluation = async (planId: number) => {
+    if (!uncertainEvaluations.has(planId)) return;
+    const baselineLastEvaluatedAt = uncertainEvaluations.get(planId) ?? null;
+    setEvaluatingId(planId);
+    setNotice(null);
+    setError(null);
+    try {
+      const reconciled = await reconcileTimedOutEvaluation(planId, baselineLastEvaluatedAt);
+      if (!reconciled) {
+        setNotice({
+          variant: 'warning',
+          title: '检查仍在后台处理中',
+          message: '尚未读取到新的检查时间，当前锁定保持不变；稍后可再次点击“重新确认”。',
+        });
+        return;
+      }
+      const statusLabel = reconciled.lastEvaluationStatus
+        ? EVALUATION_STATUS_LABELS[reconciled.lastEvaluationStatus] || reconciled.lastEvaluationStatus
+        : '已完成';
+      setUncertainEvaluations((current) => {
+        const next = new Map(current);
+        next.delete(planId);
+        return next;
+      });
+      setNotice({
+        variant: 'warning',
+        title: '后台检查已完成',
+        message: `已读取到新的检查结果：${statusLabel}。检查按钮已恢复，请查看执行轨道确认触发与通知状态。`,
+      });
+      await loadPlans();
+    } catch (requestError) {
+      const parsedError = getParsedApiError(requestError);
+      setError({
+        ...parsedError,
+        message: '重新确认失败，检查结果仍未知。当前锁定保持不变，请稍后重试。',
+      });
     } finally {
       setEvaluatingId(null);
     }
   };
 
   const evaluateAll = async () => {
+    if (uncertainEvaluations.size > 0) return;
     setEvaluatingId('all');
     setNotice(null);
+    setError(null);
     try {
       const response = await investmentPlansApi.evaluateActive(false);
       const dataMissingCount = response.results.filter((result) => (
@@ -592,7 +724,21 @@ const InvestmentPlansPage: React.FC = () => {
       });
       await loadPlans();
     } catch (requestError) {
-      setError(getParsedApiError(requestError));
+      const parsedError = getParsedApiError(requestError);
+      if (parsedError.category === 'upstream_timeout' && parsedError.status == null) {
+        const refreshed = await loadPlans();
+        setNotice(refreshed ? {
+          variant: 'warning',
+          title: '批量检查响应超时',
+          message: '已刷新当前计划状态；后台可能仍在处理其余计划，请勿立即重复检查。',
+        } : {
+          variant: 'warning',
+          title: '批量检查状态未知',
+          message: '检查请求和状态刷新均未完成，后台可能仍在处理。请勿立即重复检查，稍后重新加载页面确认。',
+        });
+      } else {
+        setError(parsedError);
+      }
     } finally {
       setEvaluatingId(null);
     }
@@ -654,7 +800,13 @@ const InvestmentPlansPage: React.FC = () => {
                 <Plus className="h-4 w-4" />
                 制定计划
               </Button>
-              <Button variant="outline" onClick={() => void evaluateAll()} isLoading={evaluatingId === 'all'} loadingText="检查中">
+              <Button
+                variant="outline"
+                onClick={() => void evaluateAll()}
+                isLoading={evaluatingId === 'all'}
+                loadingText="检查中"
+                disabled={uncertainEvaluations.size > 0}
+              >
                 <RefreshCw className="h-4 w-4" />
                 检查活跃计划
               </Button>
@@ -727,7 +879,11 @@ const InvestmentPlansPage: React.FC = () => {
               plan={plan}
               accountName={accounts.find((account) => account.id === plan.accountId)?.name}
               busy={transitioningId === plan.id || evaluatingId === plan.id}
-              onEvaluate={() => void evaluateOne(plan)}
+              evaluationUncertain={uncertainEvaluations.has(plan.id)}
+              onEvaluate={() => {
+                if (uncertainEvaluations.has(plan.id)) void confirmUncertainEvaluation(plan.id);
+                else void evaluateOne(plan);
+              }}
               onEdit={() => openEdit(plan)}
               onStatus={(status) => {
                 if (status === 'closed') setClosePlan(plan);
@@ -804,11 +960,12 @@ const PlanCard: React.FC<{
   plan: InvestmentPlanItem;
   accountName?: string;
   busy: boolean;
+  evaluationUncertain: boolean;
   onEvaluate: () => void;
   onEdit: () => void;
   onStatus: (status: InvestmentPlanStatus) => void;
   onStepStatus: (stepId: number, status: InvestmentPlanStepStatus) => void;
-}> = ({ plan, accountName, busy, onEvaluate, onEdit, onStatus, onStepStatus }) => {
+}> = ({ plan, accountName, busy, evaluationUncertain, onEvaluate, onEdit, onStatus, onStepStatus }) => {
   const statusMeta = STATUS_META[plan.status];
   const frequencyLabel = CHECK_FREQUENCY_OPTIONS.find((item) => item.value === plan.checkFrequency)?.label || plan.checkFrequency;
   const selectedChannel = plan.notificationChannels[0] || '';
@@ -844,8 +1001,14 @@ const PlanCard: React.FC<{
         <div className="flex flex-wrap gap-2">
           {plan.status === 'active' ? (
             <>
-              <Button size="sm" variant="outline" onClick={onEvaluate} isLoading={busy} loadingText="检查中">
-                <RefreshCw className="h-4 w-4" />检查
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={onEvaluate}
+                isLoading={busy}
+                loadingText="检查中"
+              >
+                <RefreshCw className="h-4 w-4" />{evaluationUncertain ? '重新确认' : '检查'}
               </Button>
               <Button size="sm" variant="ghost" onClick={() => onStatus('paused')} disabled={busy}>
                 <CirclePause className="h-4 w-4" />暂停
