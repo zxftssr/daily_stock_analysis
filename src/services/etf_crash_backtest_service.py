@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 import math
+from statistics import mean, median
 from typing import Any, Iterable, Optional, Sequence
 
 from src.data.stock_index_loader import StockIndexEntry, load_stock_index_entries
@@ -290,3 +291,302 @@ class EtfCrashBacktestService:
     @staticmethod
     def _round(value: float, digits: int = 4) -> float:
         return round(float(value), digits)
+
+
+class EtfCrashRobustnessService:
+    """Evaluate one fixed staged-buy configuration across rolling ETF windows."""
+
+    MAX_TOTAL_WINDOWS = 500
+
+    def __init__(
+        self,
+        db_manager: Optional[DatabaseManager] = None,
+        index_entries: Optional[Iterable[StockIndexEntry]] = None,
+    ) -> None:
+        self.backtest = EtfCrashBacktestService(db_manager, index_entries)
+
+    def run(
+        self,
+        *,
+        symbols: Sequence[str],
+        start_date: date,
+        end_date: date,
+        initial_capital: float,
+        stages: Sequence[dict[str, float]],
+        window_trading_days: int,
+        step_trading_days: int,
+        out_of_sample_pct: float,
+        min_windows: int,
+        min_pass_rate_pct: float,
+        min_window_return_pct: float,
+        max_window_drawdown_pct: float,
+        min_triggered_stages: int,
+    ) -> dict[str, Any]:
+        normalized_symbols = self._validate_robustness_inputs(
+            symbols=symbols,
+            start_date=start_date,
+            end_date=end_date,
+            initial_capital=initial_capital,
+            stages=stages,
+            window_trading_days=window_trading_days,
+            step_trading_days=step_trading_days,
+            out_of_sample_pct=out_of_sample_pct,
+            min_windows=min_windows,
+            min_pass_rate_pct=min_pass_rate_pct,
+            min_window_return_pct=min_window_return_pct,
+            max_window_drawdown_pct=max_window_drawdown_pct,
+            min_triggered_stages=min_triggered_stages,
+        )
+        windows: list[dict[str, Any]] = []
+        symbol_errors: list[dict[str, str]] = []
+        planned_windows: list[tuple[str, list[tuple[date, date, str]]]] = []
+
+        for symbol in normalized_symbols:
+            try:
+                full_result = self.backtest.run(
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date,
+                    initial_capital=initial_capital,
+                    stages=stages,
+                )
+                dates = [date.fromisoformat(point["date"]) for point in full_result["equity_curve"]]
+                in_sample_spans, out_of_sample_spans = self._partition_rolling_spans(
+                    dates,
+                    window_trading_days,
+                    step_trading_days,
+                    out_of_sample_pct,
+                )
+                if not in_sample_spans or not out_of_sample_spans:
+                    raise ValueError("有效交易日不足，无法形成至少 1 个样本内和 1 个样本外窗口")
+                spans = [
+                    (window_start, window_end, "in_sample")
+                    for window_start, window_end in in_sample_spans
+                ] + [
+                    (window_start, window_end, "out_of_sample")
+                    for window_start, window_end in out_of_sample_spans
+                ]
+                planned_windows.append((symbol, spans))
+            except ValueError as exc:
+                symbol_errors.append({"symbol": symbol, "message": str(exc)})
+
+        total_planned_windows = sum(len(spans) for _, spans in planned_windows)
+        if total_planned_windows > self.MAX_TOTAL_WINDOWS:
+            raise ValueError(
+                f"滚动窗口总数 {total_planned_windows} 超过上限 {self.MAX_TOTAL_WINDOWS}；"
+                "请增大滚动步长或缩短日期范围"
+            )
+
+        for symbol, spans in planned_windows:
+            try:
+                symbol_windows: list[dict[str, Any]] = []
+                for index, (window_start, window_end, sample_type) in enumerate(spans, start=1):
+                    result = self.backtest.run(
+                        symbol=symbol,
+                        start_date=window_start,
+                        end_date=window_end,
+                        initial_capital=initial_capital,
+                        stages=stages,
+                    )
+                    reasons = self._window_failure_reasons(
+                        result,
+                        min_window_return_pct=min_window_return_pct,
+                        max_window_drawdown_pct=max_window_drawdown_pct,
+                        min_triggered_stages=min_triggered_stages,
+                    )
+                    symbol_windows.append({
+                        "window_index": index,
+                        "symbol": result["symbol"],
+                        "name": result["name"],
+                        "sample_type": sample_type,
+                        "start_date": result["effective_start_date"],
+                        "end_date": result["effective_end_date"],
+                        "trading_days": result["trading_days"],
+                        "total_return_pct": result["total_return_pct"],
+                        "buy_hold_return_pct": result["buy_hold_return_pct"],
+                        "max_drawdown_pct": result["max_drawdown_pct"],
+                        "capital_utilization_pct": result["capital_utilization_pct"],
+                        "triggered_stage_count": result["triggered_stage_count"],
+                        "passed": not reasons,
+                        "failure_reasons": reasons,
+                    })
+                windows.extend(symbol_windows)
+            except ValueError as exc:
+                symbol_errors.append({"symbol": symbol, "message": str(exc)})
+
+        summary = self._summarize(windows, len(stages))
+        failure_reasons: list[str] = []
+        if len(windows) < min_windows:
+            failure_reasons.append(f"有效窗口少于 {min_windows} 个")
+        if summary["pass_rate_pct"] < min_pass_rate_pct:
+            failure_reasons.append(f"总体通过率低于 {min_pass_rate_pct:g}%")
+        if summary["out_of_sample_windows"] == 0:
+            failure_reasons.append("缺少样本外窗口")
+        elif summary["out_of_sample_pass_rate_pct"] < min_pass_rate_pct:
+            failure_reasons.append(f"样本外通过率低于 {min_pass_rate_pct:g}%")
+        if symbol_errors:
+            failure_reasons.append("部分 ETF 缺少可用历史窗口")
+
+        return {
+            "passed": not failure_reasons,
+            "failure_reasons": failure_reasons,
+            "requested_symbols": normalized_symbols,
+            "eligible_symbols": sorted({item["symbol"] for item in windows}),
+            "symbol_errors": symbol_errors,
+            "requested_start_date": start_date.isoformat(),
+            "requested_end_date": end_date.isoformat(),
+            "window_trading_days": window_trading_days,
+            "step_trading_days": step_trading_days,
+            "out_of_sample_pct": out_of_sample_pct,
+            "thresholds": {
+                "min_windows": min_windows,
+                "min_pass_rate_pct": min_pass_rate_pct,
+                "min_window_return_pct": min_window_return_pct,
+                "max_window_drawdown_pct": max_window_drawdown_pct,
+                "min_triggered_stages": min_triggered_stages,
+            },
+            "summary": summary,
+            "windows": windows,
+        }
+
+    def _validate_robustness_inputs(
+        self,
+        *,
+        symbols: Sequence[str],
+        start_date: date,
+        end_date: date,
+        initial_capital: float,
+        stages: Sequence[dict[str, float]],
+        window_trading_days: int,
+        step_trading_days: int,
+        out_of_sample_pct: float,
+        min_windows: int,
+        min_pass_rate_pct: float,
+        min_window_return_pct: float,
+        max_window_drawdown_pct: float,
+        min_triggered_stages: int,
+    ) -> list[str]:
+        normalized_stages = self.backtest._validate_inputs(
+            start_date=start_date,
+            end_date=end_date,
+            initial_capital=initial_capital,
+            stages=stages,
+        )
+        raw_symbols = [str(symbol or "").strip().upper() for symbol in symbols]
+        if not raw_symbols or len(raw_symbols) > 5 or any(not symbol for symbol in raw_symbols):
+            raise ValueError("稳健性验证需要选择 1 至 5 只 ETF")
+        normalized_symbols: list[str] = []
+        seen_etfs: set[str] = set()
+        for symbol in raw_symbols:
+            entry = self.backtest._resolve_etf(symbol)
+            identity = entry.canonical_code.upper()
+            if identity in seen_etfs:
+                continue
+            seen_etfs.add(identity)
+            normalized_symbols.append(entry.display_code)
+        if not 20 <= window_trading_days <= 500:
+            raise ValueError("滚动窗口必须在 20 至 500 个交易日之间")
+        if not 1 <= step_trading_days <= window_trading_days:
+            raise ValueError("滚动步长必须在 1 至窗口交易日数之间")
+        if not 10 <= out_of_sample_pct <= 80:
+            raise ValueError("样本外占比必须在 10% 至 80% 之间")
+        if not 2 <= min_windows <= 100:
+            raise ValueError("最少有效窗口必须在 2 至 100 之间")
+        if not 0 <= min_pass_rate_pct <= 100:
+            raise ValueError("最低通过率必须在 0% 至 100% 之间")
+        if not -100 <= min_window_return_pct <= 1000:
+            raise ValueError("单窗口最低收益阈值超出范围")
+        if not 0 <= max_window_drawdown_pct <= 100:
+            raise ValueError("单窗口最大回撤阈值必须在 0% 至 100% 之间")
+        if not 0 <= min_triggered_stages <= len(normalized_stages):
+            raise ValueError("最少触发档位不能超过策略档位数")
+        return normalized_symbols
+
+    @staticmethod
+    def _rolling_spans(
+        dates: Sequence[date],
+        window_trading_days: int,
+        step_trading_days: int,
+    ) -> list[tuple[date, date]]:
+        return [
+            (dates[start], dates[start + window_trading_days - 1])
+            for start in range(0, len(dates) - window_trading_days + 1, step_trading_days)
+        ]
+
+    @classmethod
+    def _partition_rolling_spans(
+        cls,
+        dates: Sequence[date],
+        window_trading_days: int,
+        step_trading_days: int,
+        out_of_sample_pct: float,
+    ) -> tuple[list[tuple[date, date]], list[tuple[date, date]]]:
+        if len(dates) < window_trading_days * 2:
+            return [], []
+        out_of_sample_days = min(
+            len(dates) - window_trading_days,
+            max(
+                window_trading_days,
+                math.ceil(len(dates) * out_of_sample_pct / 100.0),
+            ),
+        )
+        boundary = len(dates) - out_of_sample_days
+        return (
+            cls._rolling_spans(
+                dates[:boundary],
+                window_trading_days,
+                step_trading_days,
+            ),
+            cls._rolling_spans(
+                dates[boundary:],
+                window_trading_days,
+                step_trading_days,
+            ),
+        )
+
+    @staticmethod
+    def _window_failure_reasons(
+        result: dict[str, Any],
+        *,
+        min_window_return_pct: float,
+        max_window_drawdown_pct: float,
+        min_triggered_stages: int,
+    ) -> list[str]:
+        reasons: list[str] = []
+        if result["total_return_pct"] < min_window_return_pct:
+            reasons.append(f"收益低于 {min_window_return_pct:g}%")
+        if result["max_drawdown_pct"] > max_window_drawdown_pct:
+            reasons.append(f"最大回撤高于 {max_window_drawdown_pct:g}%")
+        if result["triggered_stage_count"] < min_triggered_stages:
+            reasons.append(f"触发档位少于 {min_triggered_stages} 个")
+        return reasons
+
+    @staticmethod
+    def _summarize(windows: Sequence[dict[str, Any]], stage_count: int) -> dict[str, Any]:
+        total = len(windows)
+        passed = sum(bool(item["passed"]) for item in windows)
+        out_windows = [item for item in windows if item["sample_type"] == "out_of_sample"]
+        out_passed = sum(bool(item["passed"]) for item in out_windows)
+        returns = [float(item["total_return_pct"]) for item in windows]
+        drawdowns = [float(item["max_drawdown_pct"]) for item in windows]
+        utilization = [float(item["capital_utilization_pct"]) for item in windows]
+        triggered = sum(int(item["triggered_stage_count"]) for item in windows)
+        return {
+            "total_windows": total,
+            "passed_windows": passed,
+            "pass_rate_pct": round(passed / total * 100.0, 4) if total else 0.0,
+            "out_of_sample_windows": len(out_windows),
+            "out_of_sample_passed_windows": out_passed,
+            "out_of_sample_pass_rate_pct": (
+                round(out_passed / len(out_windows) * 100.0, 4) if out_windows else 0.0
+            ),
+            "average_return_pct": round(mean(returns), 4) if returns else None,
+            "median_return_pct": round(median(returns), 4) if returns else None,
+            "worst_return_pct": round(min(returns), 4) if returns else None,
+            "worst_max_drawdown_pct": round(max(drawdowns), 4) if drawdowns else None,
+            "average_capital_utilization_pct": round(mean(utilization), 4) if utilization else None,
+            "trigger_coverage_pct": (
+                round(triggered / (total * stage_count) * 100.0, 4)
+                if total and stage_count else 0.0
+            ),
+        }

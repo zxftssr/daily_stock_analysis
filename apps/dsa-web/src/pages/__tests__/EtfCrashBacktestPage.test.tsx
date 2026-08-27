@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { backtestApi } from '../../api/backtest';
@@ -8,7 +8,12 @@ import { toDateInputValue } from '../../utils/format';
 import EtfCrashBacktestPage from '../EtfCrashBacktestPage';
 
 vi.mock('../../hooks/useStockIndex', () => ({ useStockIndex: vi.fn() }));
-vi.mock('../../api/backtest', () => ({ backtestApi: { runEtfCrash: vi.fn() } }));
+vi.mock('../../api/backtest', () => ({
+  backtestApi: {
+    runEtfCrash: vi.fn(),
+    runEtfCrashRobustness: vi.fn(),
+  },
+}));
 vi.mock('../../api/investmentPlans', () => ({ investmentPlansApi: { create: vi.fn() } }));
 
 const result = {
@@ -59,6 +64,50 @@ const result = {
   equityCurve: [],
 };
 
+const robustnessResult = {
+  passed: true,
+  failureReasons: [],
+  requestedSymbols: ['510300'],
+  eligibleSymbols: ['510300'],
+  symbolErrors: [],
+  requestedStartDate: '2025-08-26',
+  requestedEndDate: '2026-08-26',
+  windowTradingDays: 60,
+  stepTradingDays: 30,
+  outOfSamplePct: 40,
+  thresholds: {},
+  summary: {
+    totalWindows: 4,
+    passedWindows: 3,
+    passRatePct: 75,
+    outOfSampleWindows: 2,
+    outOfSamplePassedWindows: 2,
+    outOfSamplePassRatePct: 100,
+    averageReturnPct: 2.5,
+    medianReturnPct: 2.2,
+    worstReturnPct: -1,
+    worstMaxDrawdownPct: 8,
+    averageCapitalUtilizationPct: 35,
+    triggerCoveragePct: 66.67,
+  },
+  windows: [{
+    windowIndex: 1,
+    symbol: '510300',
+    name: '沪深300ETF',
+    sampleType: 'out_of_sample' as const,
+    startDate: '2026-01-01',
+    endDate: '2026-03-31',
+    tradingDays: 60,
+    totalReturnPct: 2,
+    buyHoldReturnPct: 1,
+    maxDrawdownPct: 5,
+    capitalUtilizationPct: 30,
+    triggeredStageCount: 2,
+    passed: true,
+    failureReasons: [],
+  }],
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(useStockIndex).mockReturnValue({
@@ -95,6 +144,7 @@ beforeEach(() => {
     loaded: true,
   });
   vi.mocked(backtestApi.runEtfCrash).mockResolvedValue(result);
+  vi.mocked(backtestApi.runEtfCrashRobustness).mockResolvedValue(robustnessResult);
   vi.mocked(investmentPlansApi.create).mockResolvedValue({
     id: 88,
     symbol: '510300',
@@ -147,6 +197,7 @@ describe('EtfCrashBacktestPage', () => {
   it('creates an active account-free investment plan from the tested stages', async () => {
     render(<MemoryRouter><EtfCrashBacktestPage /></MemoryRouter>);
     fireEvent.click(screen.getByRole('button', { name: '运行 ETF 策略回测' }));
+    fireEvent.click(await screen.findByRole('button', { name: '运行稳健性验证' }));
     fireEvent.click(await screen.findByRole('button', { name: '一键创建并启用策略' }));
 
     await waitFor(() => expect(investmentPlansApi.create).toHaveBeenCalledWith(expect.objectContaining({
@@ -177,7 +228,7 @@ describe('EtfCrashBacktestPage', () => {
     render(<MemoryRouter><EtfCrashBacktestPage /></MemoryRouter>);
 
     fireEvent.click(screen.getByRole('button', { name: '运行 ETF 策略回测' }));
-    expect(await screen.findByRole('button', { name: '一键创建并启用策略' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: '先通过稳健性验证' })).toBeDisabled();
     fireEvent.change(screen.getByLabelText('第 1 档回撤'), { target: { value: '6' } });
     fireEvent.click(screen.getByRole('button', { name: '运行 ETF 策略回测' }));
 
@@ -190,7 +241,7 @@ describe('EtfCrashBacktestPage', () => {
     render(<MemoryRouter><EtfCrashBacktestPage /></MemoryRouter>);
     const run = async () => {
       fireEvent.click(screen.getByRole('button', { name: '运行 ETF 策略回测' }));
-      expect(await screen.findByRole('button', { name: '一键创建并启用策略' })).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: '先通过稳健性验证' })).toBeDisabled();
     };
 
     await run();
@@ -223,6 +274,44 @@ describe('EtfCrashBacktestPage', () => {
 
     await waitFor(() => expect(backtestApi.runEtfCrash).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.queryByRole('button', { name: '一键创建并启用策略' })).not.toBeInTheDocument());
+    expect(investmentPlansApi.create).not.toHaveBeenCalled();
+  });
+
+  it('runs robustness validation with fixed parameters and unlocks plan creation only on pass', async () => {
+    render(<MemoryRouter><EtfCrashBacktestPage /></MemoryRouter>);
+    fireEvent.click(screen.getByRole('button', { name: '运行 ETF 策略回测' }));
+    const comparisonSelect = await screen.findByLabelText('稳健性对照 ETF');
+    const comparisonOption = within(comparisonSelect).getByRole('option', { name: '中证500ETF · 510500' }) as HTMLOptionElement;
+    comparisonOption.selected = true;
+    fireEvent.change(comparisonSelect);
+    fireEvent.click(screen.getByRole('button', { name: '运行稳健性验证' }));
+
+    await waitFor(() => expect(backtestApi.runEtfCrashRobustness).toHaveBeenCalledWith(expect.objectContaining({
+      symbol: '510300',
+      symbols: ['510300', '510500'],
+      windowTradingDays: 60,
+      stepTradingDays: 30,
+      outOfSamplePct: 40,
+      minPassRatePct: 60,
+      stages: result.stages,
+    })));
+    expect(await screen.findByText('滚动稳健性结论')).toBeInTheDocument();
+    expect(screen.getByText('样本外')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '一键创建并启用策略' })).toBeEnabled();
+  });
+
+  it('keeps plan creation locked when robustness thresholds fail', async () => {
+    vi.mocked(backtestApi.runEtfCrashRobustness).mockResolvedValueOnce({
+      ...robustnessResult,
+      passed: false,
+      failureReasons: ['总体通过率低于 60%'],
+    });
+    render(<MemoryRouter><EtfCrashBacktestPage /></MemoryRouter>);
+    fireEvent.click(screen.getByRole('button', { name: '运行 ETF 策略回测' }));
+    fireEvent.click(await screen.findByRole('button', { name: '运行稳健性验证' }));
+
+    expect(await screen.findByText('总体通过率低于 60%')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '先通过稳健性验证' })).toBeDisabled();
     expect(investmentPlansApi.create).not.toHaveBeenCalled();
   });
 });

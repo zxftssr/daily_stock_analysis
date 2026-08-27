@@ -10,10 +10,13 @@ from fastapi.testclient import TestClient
 
 from api.app import create_app
 from api.deps import get_database_manager
-from api.v1.endpoints.backtest import run_etf_crash_backtest
-from api.v1.schemas.backtest import EtfCrashBacktestRequest
+from api.v1.endpoints.backtest import run_etf_crash_backtest, run_etf_crash_robustness
+from api.v1.schemas.backtest import EtfCrashBacktestRequest, EtfCrashRobustnessRequest
 from src.data.stock_index_loader import StockIndexEntry
-from src.services.etf_crash_backtest_service import EtfCrashBacktestService
+from src.services.etf_crash_backtest_service import (
+    EtfCrashBacktestService,
+    EtfCrashRobustnessService,
+)
 
 
 class _FakeDb:
@@ -51,9 +54,33 @@ def _entry() -> StockIndexEntry:
     )
 
 
+def _second_entry() -> StockIndexEntry:
+    return StockIndexEntry(
+        canonical_code="510500.SH",
+        display_code="510500",
+        name_zh="中证500ETF",
+        market="CN",
+        asset_type="etf",
+        active=True,
+        etf_category="mid_cap",
+        benchmark_code="000905.SH",
+        benchmark_name="中证500",
+    )
+
+
 def _rows():
     first = date(2024, 1, 1)
     closes = [100.0] * 250 + [90.0, 80.0, 70.0]
+    return [
+        SimpleNamespace(date=first + timedelta(days=index), high=100.0, close=close)
+        for index, close in enumerate(closes)
+    ]
+
+
+def _robustness_rows():
+    first = date(2024, 1, 1)
+    cycle = [100.0, 95.0, 90.0, 85.0, 90.0, 95.0]
+    closes = [100.0] * 250 + [cycle[index % len(cycle)] for index in range(210)]
     return [
         SimpleNamespace(date=first + timedelta(days=index), high=100.0, close=close)
         for index, close in enumerate(closes)
@@ -218,3 +245,134 @@ def test_http_endpoint_returns_etf_crash_contract():
     assert response.json()["symbol"] == "510300"
     assert response.json()["trigger_count"] == 2
     assert response.json()["source"] == "sqlite"
+
+
+def _robustness_request(**overrides):
+    rows = _robustness_rows()
+    payload = {
+        "symbols": ["510300"],
+        "start_date": rows[249].date,
+        "end_date": rows[-1].date,
+        "initial_capital": 100000,
+        "stages": [
+            {"drawdown_pct": 5, "target_position_pct": 30},
+            {"drawdown_pct": 10, "target_position_pct": 60},
+        ],
+        "window_trading_days": 60,
+        "step_trading_days": 30,
+        "out_of_sample_pct": 50,
+        "min_windows": 3,
+        "min_pass_rate_pct": 60,
+        "min_window_return_pct": -100,
+        "max_window_drawdown_pct": 100,
+        "min_triggered_stages": 1,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_robustness_runs_fixed_parameters_across_in_and_out_of_sample_windows():
+    rows = _robustness_rows()
+    service = EtfCrashRobustnessService(_FakeDb(rows), [_entry()])
+
+    result = service.run(**_robustness_request())
+
+    assert result["passed"] is True
+    assert result["summary"]["total_windows"] == 4
+    assert result["summary"]["passed_windows"] == 4
+    assert result["summary"]["out_of_sample_windows"] == 2
+    assert result["summary"]["out_of_sample_pass_rate_pct"] == 100.0
+    assert result["summary"]["trigger_coverage_pct"] == 100.0
+    assert [item["sample_type"] for item in result["windows"]] == [
+        "in_sample", "in_sample", "out_of_sample", "out_of_sample",
+    ]
+    in_sample_end = max(
+        date.fromisoformat(item["end_date"])
+        for item in result["windows"]
+        if item["sample_type"] == "in_sample"
+    )
+    out_of_sample_start = min(
+        date.fromisoformat(item["start_date"])
+        for item in result["windows"]
+        if item["sample_type"] == "out_of_sample"
+    )
+    assert in_sample_end < out_of_sample_start
+
+
+def test_robustness_keeps_an_in_sample_window_at_high_holdout_ratio():
+    service = EtfCrashRobustnessService(_FakeDb(_robustness_rows()), [_entry()])
+
+    result = service.run(**_robustness_request(out_of_sample_pct=80))
+
+    assert result["passed"] is True
+    assert [item["sample_type"] for item in result["windows"]] == [
+        "in_sample", "out_of_sample", "out_of_sample", "out_of_sample", "out_of_sample",
+    ]
+
+
+def test_robustness_deduplicates_display_and_canonical_etf_codes():
+    service = EtfCrashRobustnessService(_FakeDb(_robustness_rows()), [_entry()])
+
+    result = service.run(**_robustness_request(
+        symbols=["510300", "510300.SH"],
+        min_windows=4,
+    ))
+
+    assert result["passed"] is True
+    assert result["requested_symbols"] == ["510300"]
+    assert result["eligible_symbols"] == ["510300"]
+    assert result["summary"]["total_windows"] == 4
+
+
+def test_robustness_rejects_too_many_windows_before_expanding_them(monkeypatch):
+    rows = _robustness_rows()
+    db = _FakeDb(rows)
+    service = EtfCrashRobustnessService(db, [_entry()])
+    span = (rows[249].date, rows[268].date)
+    monkeypatch.setattr(
+        EtfCrashRobustnessService,
+        "_rolling_spans",
+        staticmethod(lambda *_args: [span] * (service.MAX_TOTAL_WINDOWS + 1)),
+    )
+
+    with pytest.raises(ValueError, match="滚动窗口总数 1002 超过上限 500"):
+        service.run(**_robustness_request(window_trading_days=20, step_trading_days=20))
+
+    assert len(db.calls) < service.MAX_TOTAL_WINDOWS
+
+
+def test_robustness_fails_when_window_and_holdout_pass_rates_miss_threshold():
+    service = EtfCrashRobustnessService(_FakeDb(_robustness_rows()), [_entry()])
+
+    result = service.run(**_robustness_request(min_window_return_pct=100))
+
+    assert result["passed"] is False
+    assert result["summary"]["pass_rate_pct"] == 0.0
+    assert result["summary"]["out_of_sample_pass_rate_pct"] == 0.0
+    assert any("总体通过率" in reason for reason in result["failure_reasons"])
+    assert any("样本外通过率" in reason for reason in result["failure_reasons"])
+
+
+def test_robustness_fails_closed_when_one_selected_etf_has_no_history():
+    rows = _robustness_rows()
+    service = EtfCrashRobustnessService(
+        _CandidateDb({"510300": rows}),
+        [_entry(), _second_entry()],
+    )
+
+    result = service.run(**_robustness_request(symbols=["510300", "510500"]))
+
+    assert result["passed"] is False
+    assert result["eligible_symbols"] == ["510300"]
+    assert result["symbol_errors"][0]["symbol"] == "510500"
+    assert any("部分 ETF" in reason for reason in result["failure_reasons"])
+
+
+def test_robustness_endpoint_returns_typed_summary():
+    request = EtfCrashRobustnessRequest(**_robustness_request())
+
+    response = run_etf_crash_robustness(request, _FakeDb(_robustness_rows()))
+
+    assert response.passed is True
+    assert response.summary.total_windows == 4
+    assert response.summary.out_of_sample_windows == 2

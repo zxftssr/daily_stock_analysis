@@ -1016,6 +1016,10 @@ Drawdown thresholds and cumulative target positions must both increase strictly,
 
 After a successful run, **Create and activate strategy** reuses the existing `index_crash` plan contract. Each tier becomes a `benchmark_drawdown_250d_pct >= threshold` buy/add step, the ETF itself is the benchmark, account binding remains empty, and notifications inherit the global alert route. The live plan checks and notifies only; it never trades automatically.
 
+To reduce single-period luck, the page also provides fixed-parameter **Robustness validation**. It repeats the exact same tier configuration across rolling windows on the primary ETF and up to four comparison ETFs, using user-selected window and step sizes. It never searches, ranks, or replaces the user's parameters. The service first establishes a trading-date boundary, then generates in-sample and out-of-sample windows independently on either side, so no window crosses that boundary. If the requested share cannot hold a complete window, that side is expanded to the minimum required trading days.
+
+Each window can require a minimum return, maximum drawdown, and minimum number of triggered tiers. Every ETF keeps at least one in-sample and one out-of-sample window, aliases of the same ETF count only once, and a request may expand at most 500 windows; increase the step or shorten the date range when that cap is exceeded. The summary reports overall and out-of-sample pass rates, average/median/worst returns, worst maximum drawdown, average capital utilization, and tier-trigger coverage. Strategy creation is unlocked only when enough valid windows exist, both overall and out-of-sample pass rates meet the threshold, and every selected ETF has usable history. Changing any backtest parameter or robustness threshold invalidates the previous conclusion.
+
 ---
 
 ## Investment Strategy Plans
@@ -1111,6 +1115,7 @@ FastAPI provides RESTful API service for configuration management and triggering
 | `/api/v1/backtest/performance` | GET | Get overall backtest performance |
 | `/api/v1/backtest/performance/{code}` | GET | Get per-stock backtest performance |
 | `/api/v1/backtest/etf-crash` | POST | Backtest staged ETF buying from 250-day drawdown using local SQLite bars |
+| `/api/v1/backtest/etf-crash/robustness` | POST | Validate fixed ETF strategy parameters across rolling windows and comparison ETFs |
 | `/api/v1/investment-plans` | GET/POST | List or create investment strategy plans |
 | `/api/v1/investment-plans/{id}/evaluate` | POST | Manually evaluate one active plan |
 | `/api/v1/investment-plans/evaluate-active?notify=false` | POST | Evaluate all active plans with optional alert delivery |

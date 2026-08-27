@@ -87,6 +87,66 @@ export interface EtfCrashBacktestResponse {
   equityCurve: EtfCrashEquityPoint[];
 }
 
+export interface EtfCrashRobustnessRequest extends EtfCrashBacktestRequest {
+  symbols: string[];
+  windowTradingDays: number;
+  stepTradingDays: number;
+  outOfSamplePct: number;
+  minWindows: number;
+  minPassRatePct: number;
+  minWindowReturnPct: number;
+  maxWindowDrawdownPct: number;
+  minTriggeredStages: number;
+}
+
+export interface EtfCrashRobustnessWindow {
+  windowIndex: number;
+  symbol: string;
+  name: string;
+  sampleType: 'in_sample' | 'out_of_sample';
+  startDate: string;
+  endDate: string;
+  tradingDays: number;
+  totalReturnPct: number;
+  buyHoldReturnPct: number;
+  maxDrawdownPct: number;
+  capitalUtilizationPct: number;
+  triggeredStageCount: number;
+  passed: boolean;
+  failureReasons: string[];
+}
+
+export interface EtfCrashRobustnessSummary {
+  totalWindows: number;
+  passedWindows: number;
+  passRatePct: number;
+  outOfSampleWindows: number;
+  outOfSamplePassedWindows: number;
+  outOfSamplePassRatePct: number;
+  averageReturnPct?: number | null;
+  medianReturnPct?: number | null;
+  worstReturnPct?: number | null;
+  worstMaxDrawdownPct?: number | null;
+  averageCapitalUtilizationPct?: number | null;
+  triggerCoveragePct: number;
+}
+
+export interface EtfCrashRobustnessResponse {
+  passed: boolean;
+  failureReasons: string[];
+  requestedSymbols: string[];
+  eligibleSymbols: string[];
+  symbolErrors: Array<{ symbol: string; message: string }>;
+  requestedStartDate: string;
+  requestedEndDate: string;
+  windowTradingDays: number;
+  stepTradingDays: number;
+  outOfSamplePct: number;
+  thresholds: Record<string, number>;
+  summary: EtfCrashRobustnessSummary;
+  windows: EtfCrashRobustnessWindow[];
+}
+
 // ============ Result Item ============
 
 export interface BacktestResultItem {

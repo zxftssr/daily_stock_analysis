@@ -162,3 +162,67 @@ class EtfCrashBacktestResponse(BaseModel):
     stages: List[EtfCrashBacktestStage] = Field(default_factory=list)
     trades: List[EtfCrashBacktestTrade] = Field(default_factory=list)
     equity_curve: List[EtfCrashEquityPoint] = Field(default_factory=list)
+
+
+class EtfCrashRobustnessRequest(BaseModel):
+    symbols: List[str] = Field(..., min_length=1, max_length=5)
+    start_date: date
+    end_date: date
+    initial_capital: float = Field(100000, gt=0, le=1_000_000_000)
+    stages: List[EtfCrashBacktestStage] = Field(..., min_length=1, max_length=6)
+    window_trading_days: int = Field(60, ge=20, le=500)
+    step_trading_days: int = Field(30, ge=1, le=500)
+    out_of_sample_pct: float = Field(40, ge=10, le=80)
+    min_windows: int = Field(3, ge=2, le=100)
+    min_pass_rate_pct: float = Field(60, ge=0, le=100)
+    min_window_return_pct: float = Field(0, ge=-100, le=1000)
+    max_window_drawdown_pct: float = Field(15, ge=0, le=100)
+    min_triggered_stages: int = Field(1, ge=0, le=6)
+
+
+class EtfCrashRobustnessWindow(BaseModel):
+    window_index: int
+    symbol: str
+    name: str
+    sample_type: str
+    start_date: str
+    end_date: str
+    trading_days: int
+    total_return_pct: float
+    buy_hold_return_pct: float
+    max_drawdown_pct: float
+    capital_utilization_pct: float
+    triggered_stage_count: int
+    passed: bool
+    failure_reasons: List[str] = Field(default_factory=list)
+
+
+class EtfCrashRobustnessSummary(BaseModel):
+    total_windows: int
+    passed_windows: int
+    pass_rate_pct: float
+    out_of_sample_windows: int
+    out_of_sample_passed_windows: int
+    out_of_sample_pass_rate_pct: float
+    average_return_pct: Optional[float] = None
+    median_return_pct: Optional[float] = None
+    worst_return_pct: Optional[float] = None
+    worst_max_drawdown_pct: Optional[float] = None
+    average_capital_utilization_pct: Optional[float] = None
+    trigger_coverage_pct: float
+
+
+class EtfCrashRobustnessResponse(BaseModel):
+    passed: bool
+    failure_reasons: List[str] = Field(default_factory=list)
+    requested_symbols: List[str] = Field(default_factory=list)
+    eligible_symbols: List[str] = Field(default_factory=list)
+    symbol_errors: List[Dict[str, str]] = Field(default_factory=list)
+    requested_start_date: str
+    requested_end_date: str
+    window_trading_days: int
+    step_trading_days: int
+    out_of_sample_pct: float
+    thresholds: Dict[str, Any] = Field(default_factory=dict)
+    summary: EtfCrashRobustnessSummary
+    windows: List[EtfCrashRobustnessWindow] = Field(default_factory=list)

@@ -11,6 +11,8 @@ import type {
   EtfCrashBacktestRequest,
   EtfCrashBacktestResponse,
   EtfCrashBacktestStage,
+  EtfCrashRobustnessRequest,
+  EtfCrashRobustnessResponse,
 } from '../types/backtest';
 import type { InvestmentPlanItem } from '../types/investmentPlan';
 import { toDateInputValue } from '../utils/format';
@@ -64,11 +66,23 @@ const EtfCrashBacktestPage: React.FC = () => {
   const [stages, setStages] = useState<EtfCrashBacktestStage[]>(DEFAULT_STAGES);
   const [running, setRunning] = useState(false);
   const [creatingPlan, setCreatingPlan] = useState(false);
+  const [robustnessRunning, setRobustnessRunning] = useState(false);
   const [result, setResult] = useState<EtfCrashBacktestResponse | null>(null);
+  const [robustnessResult, setRobustnessResult] = useState<EtfCrashRobustnessResponse | null>(null);
   const [lastRequest, setLastRequest] = useState<EtfCrashBacktestRequest | null>(null);
   const [createdPlan, setCreatedPlan] = useState<InvestmentPlanItem | null>(null);
   const [error, setError] = useState<ReturnType<typeof getParsedApiError> | null>(null);
   const requestVersion = useRef(0);
+  const robustnessVersion = useRef(0);
+  const [comparisonSymbols, setComparisonSymbols] = useState<string[]>([]);
+  const [windowTradingDays, setWindowTradingDays] = useState(60);
+  const [stepTradingDays, setStepTradingDays] = useState(30);
+  const [outOfSamplePct, setOutOfSamplePct] = useState(40);
+  const [minWindows, setMinWindows] = useState(3);
+  const [minPassRatePct, setMinPassRatePct] = useState(60);
+  const [minWindowReturnPct, setMinWindowReturnPct] = useState(0);
+  const [maxWindowDrawdownPct, setMaxWindowDrawdownPct] = useState(15);
+  const [minTriggeredStages, setMinTriggeredStages] = useState(1);
 
   useEffect(() => {
     document.title = 'ETF 大跌策略回测 - DSA';
@@ -82,10 +96,28 @@ const EtfCrashBacktestPage: React.FC = () => {
 
   const invalidateResult = () => {
     requestVersion.current += 1;
+    robustnessVersion.current += 1;
     setRunning(false);
+    setRobustnessRunning(false);
     setResult(null);
+    setRobustnessResult(null);
     setLastRequest(null);
     setCreatedPlan(null);
+  };
+
+  const invalidateRobustness = () => {
+    robustnessVersion.current += 1;
+    setRobustnessRunning(false);
+    setRobustnessResult(null);
+    setCreatedPlan(null);
+  };
+
+  const updateRobustnessNumber = (
+    setter: React.Dispatch<React.SetStateAction<number>>,
+    value: number,
+  ) => {
+    invalidateRobustness();
+    setter(value);
   };
 
   const updateStage = (index: number, field: keyof EtfCrashBacktestStage, value: number) => {
@@ -112,7 +144,10 @@ const EtfCrashBacktestPage: React.FC = () => {
   const handleRun = async () => {
     const version = requestVersion.current + 1;
     requestVersion.current = version;
+    robustnessVersion.current += 1;
+    setRobustnessRunning(false);
     setResult(null);
+    setRobustnessResult(null);
     setLastRequest(null);
     setCreatedPlan(null);
     const validation = validate();
@@ -144,8 +179,43 @@ const EtfCrashBacktestPage: React.FC = () => {
     }
   };
 
+  const handleRunRobustness = async () => {
+    if (!lastRequest || !result) return;
+    const version = robustnessVersion.current + 1;
+    robustnessVersion.current = version;
+    const symbols = [symbol, ...comparisonSymbols.filter(item => item !== symbol)].slice(0, 5);
+    const request: EtfCrashRobustnessRequest = {
+      ...lastRequest,
+      symbols,
+      windowTradingDays,
+      stepTradingDays,
+      outOfSamplePct,
+      minWindows,
+      minPassRatePct,
+      minWindowReturnPct,
+      maxWindowDrawdownPct,
+      minTriggeredStages,
+    };
+    setRobustnessRunning(true);
+    setRobustnessResult(null);
+    setCreatedPlan(null);
+    setError(null);
+    try {
+      const response = await backtestApi.runEtfCrashRobustness(request);
+      if (version !== robustnessVersion.current) return;
+      setRobustnessResult(response);
+    } catch (requestError) {
+      if (version !== robustnessVersion.current) return;
+      setError(getParsedApiError(requestError));
+    } finally {
+      if (version === robustnessVersion.current) {
+        setRobustnessRunning(false);
+      }
+    }
+  };
+
   const handleCreatePlan = async () => {
-    if (!result || !lastRequest) return;
+    if (!result || !lastRequest || !robustnessResult?.passed) return;
     const finalTarget = lastRequest.stages[lastRequest.stages.length - 1].targetPositionPct;
     setCreatingPlan(true);
     setError(null);
@@ -156,7 +226,7 @@ const EtfCrashBacktestPage: React.FC = () => {
         name: `${result.name}大跌分档计划`,
         strategyType: 'index_crash',
         status: 'active',
-        thesis: `基于 ${result.effectiveStartDate} 至 ${result.effectiveEndDate} 的本地日线回测，分档策略收益 ${result.totalReturnPct.toFixed(2)}%，最大回撤 ${result.maxDrawdownPct.toFixed(2)}%。`,
+        thesis: `基于 ${result.effectiveStartDate} 至 ${result.effectiveEndDate} 的本地日线回测，分档策略收益 ${result.totalReturnPct.toFixed(2)}%，最大回撤 ${result.maxDrawdownPct.toFixed(2)}%；滚动稳健性验证 ${robustnessResult.summary.passedWindows}/${robustnessResult.summary.totalWindows} 个窗口通过。`,
         invalidationNote: 'ETF 停止跟踪目标指数、流动性显著恶化或回撤数据过期时暂停执行，并由人工重新评估。',
         benchmarkSymbol: result.symbol,
         maxPositionPct: finalTarget,
@@ -277,7 +347,11 @@ const EtfCrashBacktestPage: React.FC = () => {
                       </label>
                       <Button size="sm" variant="ghost" aria-label={`删除第 ${index + 1} 档`} disabled={stages.length === 1} onClick={() => {
                         invalidateResult();
-                        setStages(current => current.filter((_, stageIndex) => stageIndex !== index));
+                        setStages(current => {
+                          const next = current.filter((_, stageIndex) => stageIndex !== index);
+                          setMinTriggeredStages(value => Math.min(value, next.length));
+                          return next;
+                        });
                       }}>
                         <Trash2 className="h-4 w-4" />
                       </Button>
@@ -290,6 +364,69 @@ const EtfCrashBacktestPage: React.FC = () => {
                 运行 ETF 策略回测
               </Button>
               <p className="text-xs leading-5 text-muted-foreground">只使用已预热到 SQLite 的日线；不包含手续费、滑点、分红和自动下单。</p>
+
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground">稳健性验证</h3>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">固定当前档位，在滚动窗口和可选对照 ETF 上验证；不会自动寻找最优参数。</p>
+                </div>
+                <label className="mt-3 block text-xs text-muted-foreground">
+                  对照 ETF（最多再选 4 只）
+                  <select
+                    multiple
+                    aria-label="稳健性对照 ETF"
+                    value={comparisonSymbols}
+                    onChange={event => {
+                      invalidateRobustness();
+                      setComparisonSymbols(Array.from(event.target.selectedOptions)
+                        .map(option => option.value)
+                        .slice(0, 4));
+                    }}
+                    className={`${inputClass} mt-1 h-24 py-2`}
+                  >
+                    {etfs.filter(item => item.displayCode !== symbol).map(item => (
+                      <option key={item.displayCode} value={item.displayCode}>{item.nameZh} · {item.displayCode}</option>
+                    ))}
+                  </select>
+                </label>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <label className="text-xs text-muted-foreground">窗口交易日
+                    <input aria-label="窗口交易日" type="number" min={20} max={500} value={windowTradingDays} onChange={event => updateRobustnessNumber(setWindowTradingDays, Number(event.target.value))} className={`${inputClass} mt-1`} />
+                  </label>
+                  <label className="text-xs text-muted-foreground">滚动步长
+                    <input aria-label="滚动步长" type="number" min={1} max={windowTradingDays} value={stepTradingDays} onChange={event => updateRobustnessNumber(setStepTradingDays, Number(event.target.value))} className={`${inputClass} mt-1`} />
+                  </label>
+                  <label className="text-xs text-muted-foreground">样本外占比 %
+                    <input aria-label="样本外占比" type="number" min={10} max={80} value={outOfSamplePct} onChange={event => updateRobustnessNumber(setOutOfSamplePct, Number(event.target.value))} className={`${inputClass} mt-1`} />
+                  </label>
+                  <label className="text-xs text-muted-foreground">最少窗口
+                    <input aria-label="最少有效窗口" type="number" min={2} max={100} value={minWindows} onChange={event => updateRobustnessNumber(setMinWindows, Number(event.target.value))} className={`${inputClass} mt-1`} />
+                  </label>
+                  <label className="text-xs text-muted-foreground">最低通过率 %
+                    <input aria-label="最低通过率" type="number" min={0} max={100} value={minPassRatePct} onChange={event => updateRobustnessNumber(setMinPassRatePct, Number(event.target.value))} className={`${inputClass} mt-1`} />
+                  </label>
+                  <label className="text-xs text-muted-foreground">窗口最低收益 %
+                    <input aria-label="窗口最低收益" type="number" min={-100} max={1000} step={0.1} value={minWindowReturnPct} onChange={event => updateRobustnessNumber(setMinWindowReturnPct, Number(event.target.value))} className={`${inputClass} mt-1`} />
+                  </label>
+                  <label className="text-xs text-muted-foreground">窗口最大回撤 %
+                    <input aria-label="窗口最大回撤" type="number" min={0} max={100} step={0.1} value={maxWindowDrawdownPct} onChange={event => updateRobustnessNumber(setMaxWindowDrawdownPct, Number(event.target.value))} className={`${inputClass} mt-1`} />
+                  </label>
+                  <label className="text-xs text-muted-foreground">最少触发档位
+                    <input aria-label="最少触发档位" type="number" min={0} max={stages.length} value={minTriggeredStages} onChange={event => updateRobustnessNumber(setMinTriggeredStages, Number(event.target.value))} className={`${inputClass} mt-1`} />
+                  </label>
+                </div>
+                <Button
+                  className="mt-3 w-full"
+                  variant="secondary"
+                  disabled={!result}
+                  isLoading={robustnessRunning}
+                  loadingText="验证中"
+                  onClick={() => void handleRunRobustness()}
+                >
+                  运行稳健性验证
+                </Button>
+                {!result ? <p className="mt-2 text-xs text-muted-foreground">请先运行当前参数的单次回测。</p> : null}
+              </div>
             </div>
           </Card>
 
@@ -303,8 +440,8 @@ const EtfCrashBacktestPage: React.FC = () => {
                     <h2 className="font-semibold text-foreground">{result.name} · {result.symbol}</h2>
                     <p className="mt-1 text-xs text-muted-foreground">有效区间 {result.effectiveStartDate} 至 {result.effectiveEndDate} · {result.tradingDays} 个交易日 · 数据代码 {result.storageCode}</p>
                   </div>
-                  <Button isLoading={creatingPlan} loadingText="创建中" onClick={() => void handleCreatePlan()}>
-                    一键创建并启用策略
+                  <Button disabled={!robustnessResult?.passed} isLoading={creatingPlan} loadingText="创建中" onClick={() => void handleCreatePlan()}>
+                    {robustnessResult?.passed ? '一键创建并启用策略' : '先通过稳健性验证'}
                   </Button>
                 </div>
 
@@ -318,6 +455,57 @@ const EtfCrashBacktestPage: React.FC = () => {
                   <ResultMetric label="首次等待" value={`${result.firstTriggerWaitTradingDays} 个交易日`} />
                   <ResultMetric label="最长等待" value={`${result.longestWaitTradingDays} 个交易日`} />
                 </div>
+
+                {robustnessResult ? (
+                  <Card variant="bordered" padding="lg">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-semibold text-foreground">滚动稳健性结论</h3>
+                          <Badge variant={robustnessResult.passed ? 'success' : 'danger'}>
+                            {robustnessResult.passed ? '通过' : '未通过'}
+                          </Badge>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">固定参数 · {robustnessResult.eligibleSymbols.length}/{robustnessResult.requestedSymbols.length} 只 ETF 有效</p>
+                      </div>
+                      <div className="text-right text-xs text-muted-foreground">
+                        <p>总体 {robustnessResult.summary.passedWindows}/{robustnessResult.summary.totalWindows} · {robustnessResult.summary.passRatePct.toFixed(1)}%</p>
+                        <p>样本外 {robustnessResult.summary.outOfSamplePassedWindows}/{robustnessResult.summary.outOfSampleWindows} · {robustnessResult.summary.outOfSamplePassRatePct.toFixed(1)}%</p>
+                      </div>
+                    </div>
+                    {robustnessResult.failureReasons.length ? (
+                      <div className="mt-3 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-xs text-danger">
+                        {robustnessResult.failureReasons.join('；')}
+                      </div>
+                    ) : null}
+                    <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                      <div className="rounded-md bg-muted/40 p-3"><p className="text-xs text-muted-foreground">平均 / 最差收益</p><p className="mt-1 font-semibold text-foreground">{robustnessResult.summary.averageReturnPct?.toFixed(2) ?? '--'}% / {robustnessResult.summary.worstReturnPct?.toFixed(2) ?? '--'}%</p></div>
+                      <div className="rounded-md bg-muted/40 p-3"><p className="text-xs text-muted-foreground">最差最大回撤</p><p className="mt-1 font-semibold text-foreground">{robustnessResult.summary.worstMaxDrawdownPct?.toFixed(2) ?? '--'}%</p></div>
+                      <div className="rounded-md bg-muted/40 p-3"><p className="text-xs text-muted-foreground">档位触发覆盖</p><p className="mt-1 font-semibold text-foreground">{robustnessResult.summary.triggerCoveragePct.toFixed(2)}%</p></div>
+                    </div>
+                    <div className="mt-4 overflow-x-auto">
+                      <table className="w-full min-w-[820px] text-sm">
+                        <thead className="border-b border-border text-left text-xs text-muted-foreground">
+                          <tr><th className="py-2">ETF</th><th>样本</th><th>窗口</th><th>收益</th><th>最大回撤</th><th>资金利用率</th><th>触发档位</th><th>结论</th></tr>
+                        </thead>
+                        <tbody>
+                          {robustnessResult.windows.map(item => (
+                            <tr key={`${item.symbol}-${item.windowIndex}`} className="border-b border-border/50 text-foreground">
+                              <td className="py-3">{item.name}<span className="ml-1 text-xs text-muted-foreground">{item.symbol}</span></td>
+                              <td><Badge variant={item.sampleType === 'out_of_sample' ? 'info' : 'default'}>{item.sampleType === 'out_of_sample' ? '样本外' : '样本内'}</Badge></td>
+                              <td>{item.startDate} → {item.endDate}</td>
+                              <td>{percent(item.totalReturnPct)}</td>
+                              <td>{item.maxDrawdownPct.toFixed(2)}%</td>
+                              <td>{item.capitalUtilizationPct.toFixed(2)}%</td>
+                              <td>{item.triggeredStageCount}</td>
+                              <td><Badge variant={item.passed ? 'success' : 'danger'}>{item.passed ? '通过' : item.failureReasons.join(' / ')}</Badge></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </Card>
+                ) : null}
 
                 <Card variant="bordered" padding="lg">
                   <div className="flex items-center justify-between gap-2">

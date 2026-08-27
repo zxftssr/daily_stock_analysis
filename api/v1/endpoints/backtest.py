@@ -17,11 +17,16 @@ from api.v1.schemas.backtest import (
     BacktestResultsResponse,
     EtfCrashBacktestRequest,
     EtfCrashBacktestResponse,
+    EtfCrashRobustnessRequest,
+    EtfCrashRobustnessResponse,
     PerformanceMetrics,
 )
 from api.v1.schemas.common import ErrorResponse
 from src.services.backtest_service import BacktestService
-from src.services.etf_crash_backtest_service import EtfCrashBacktestService
+from src.services.etf_crash_backtest_service import (
+    EtfCrashBacktestService,
+    EtfCrashRobustnessService,
+)
 from src.storage import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -63,6 +68,51 @@ def run_etf_crash_backtest(
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": "ETF 大跌策略回测失败"},
+        )
+
+
+@router.post(
+    "/etf-crash/robustness",
+    response_model=EtfCrashRobustnessResponse,
+    responses={
+        200: {"description": "ETF 大跌策略稳健性验证完成"},
+        400: {"description": "参数或本地历史数据不足", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="验证 ETF 大跌分档策略的跨窗口稳健性",
+    description="使用固定参数在多只 ETF 的滚动窗口中验证，不搜索或优化参数。",
+)
+def run_etf_crash_robustness(
+    request: EtfCrashRobustnessRequest,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> EtfCrashRobustnessResponse:
+    try:
+        payload = EtfCrashRobustnessService(db_manager).run(
+            symbols=request.symbols,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            initial_capital=request.initial_capital,
+            stages=[stage.model_dump() for stage in request.stages],
+            window_trading_days=request.window_trading_days,
+            step_trading_days=request.step_trading_days,
+            out_of_sample_pct=request.out_of_sample_pct,
+            min_windows=request.min_windows,
+            min_pass_rate_pct=request.min_pass_rate_pct,
+            min_window_return_pct=request.min_window_return_pct,
+            max_window_drawdown_pct=request.max_window_drawdown_pct,
+            min_triggered_stages=request.min_triggered_stages,
+        )
+        return EtfCrashRobustnessResponse(**payload)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_params", "message": str(exc)},
+        )
+    except Exception as exc:
+        logger.error("ETF 大跌策略稳健性验证失败: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "ETF 大跌策略稳健性验证失败"},
         )
 
 

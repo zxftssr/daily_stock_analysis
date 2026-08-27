@@ -7,6 +7,8 @@ import type {
   BacktestResultItem,
   EtfCrashBacktestRequest,
   EtfCrashBacktestResponse,
+  EtfCrashRobustnessRequest,
+  EtfCrashRobustnessResponse,
   PerformanceMetrics,
 } from '../types/backtest';
 
@@ -28,6 +30,33 @@ export const backtestApi = {
       },
     );
     return toCamelCase<EtfCrashBacktestResponse>(response.data);
+  },
+
+  runEtfCrashRobustness: async (
+    params: EtfCrashRobustnessRequest,
+  ): Promise<EtfCrashRobustnessResponse> => {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/backtest/etf-crash/robustness',
+      {
+        symbols: params.symbols,
+        start_date: params.startDate,
+        end_date: params.endDate,
+        initial_capital: params.initialCapital,
+        stages: params.stages.map(stage => ({
+          drawdown_pct: stage.drawdownPct,
+          target_position_pct: stage.targetPositionPct,
+        })),
+        window_trading_days: params.windowTradingDays,
+        step_trading_days: params.stepTradingDays,
+        out_of_sample_pct: params.outOfSamplePct,
+        min_windows: params.minWindows,
+        min_pass_rate_pct: params.minPassRatePct,
+        min_window_return_pct: params.minWindowReturnPct,
+        max_window_drawdown_pct: params.maxWindowDrawdownPct,
+        min_triggered_stages: params.minTriggeredStages,
+      },
+    );
+    return toCamelCase<EtfCrashRobustnessResponse>(response.data);
   },
 
   /**
