@@ -1443,7 +1443,13 @@ class DataFetcherManager:
             logger.error(f"[预取] 批量预取异常: {e}")
             return 0
     
-    def get_realtime_quote(self, stock_code: str, *, log_final_failure: bool = True):
+    def get_realtime_quote(
+        self,
+        stock_code: str,
+        *,
+        log_final_failure: bool = True,
+        enrich: bool = True,
+    ):
         """
         获取实时行情数据（自动故障切换）
         
@@ -1457,6 +1463,9 @@ class DataFetcherManager:
             stock_code: 股票代码
             log_final_failure: Whether to emit the final "all sources failed"
                 summary log when no realtime quote is available.
+            enrich: Whether to supplement optional valuation and activity fields
+                after the first source returns a valid price. Price-only callers
+                should disable this to avoid full-market snapshot requests.
             
         Returns:
             UnifiedRealtimeQuote 对象，所有数据源都失败则返回 None
@@ -1527,6 +1536,7 @@ class DataFetcherManager:
                 market_label,
                 route,
                 accept_sparse_public=is_us and not is_us_index,
+                enrich=enrich,
             )
             if primary_quote is not None:
                 return primary_quote
@@ -1610,7 +1620,10 @@ class DataFetcherManager:
                         quote_source = getattr(getattr(quote, "source", None), "value", source)
                         logger.info(f"[实时行情] {stock_code} 成功获取 (来源: {quote_source})")
                         # If all key supplementary fields are present, return early
-                        if not self._quote_needs_supplement(primary_quote):
+                        if not enrich or not self._quote_needs_supplement(
+                            primary_quote,
+                            stock_code=stock_code,
+                        ):
                             return primary_quote
                         # Otherwise, continue to try later sources for missing fields
                         logger.debug(f"[实时行情] {stock_code} 部分字段缺失，尝试从后续数据源补充")
@@ -1618,14 +1631,17 @@ class DataFetcherManager:
                     else:
                         # Supplement missing fields from this source (limit attempts)
                         supplement_attempts += 1
-                        if supplement_attempts > 1:
-                            logger.debug(f"[实时行情] {stock_code} 补充尝试已达上限，停止继续")
-                            break
                         merged = self._merge_quote_fields(primary_quote, quote)
                         if merged:
                             logger.info(f"[实时行情] {stock_code} 从 {source} 补充了缺失字段: {merged}")
                         # Stop supplementing once all key fields are filled
-                        if not self._quote_needs_supplement(primary_quote):
+                        if not self._quote_needs_supplement(
+                            primary_quote,
+                            stock_code=stock_code,
+                        ):
+                            break
+                        if supplement_attempts >= 1:
+                            logger.debug(f"[实时行情] {stock_code} 补充尝试已达上限，停止继续")
                             break
                     
             except Exception as e:
@@ -1654,6 +1670,9 @@ class DataFetcherManager:
         'pe_ratio', 'pb_ratio', 'total_mv', 'circ_mv',
         'amplitude',
     ]
+    _ETF_SUPPLEMENT_FIELDS = [
+        'volume_ratio', 'turnover_rate', 'amplitude',
+    ]
     _PUBLIC_REALTIME_SOURCES = frozenset({
         "tencent",
         "sina",
@@ -1661,12 +1680,23 @@ class DataFetcherManager:
     })
 
     @classmethod
-    def _quote_needs_supplement(cls, quote, *, accept_sparse_public: bool = False) -> bool:
+    def _quote_needs_supplement(
+        cls,
+        quote,
+        *,
+        stock_code: Optional[str] = None,
+        accept_sparse_public: bool = False,
+    ) -> bool:
         """Check if any key supplementary field is still None."""
         quote_source = getattr(getattr(quote, "source", None), "value", "")
         if accept_sparse_public and quote_source in cls._PUBLIC_REALTIME_SOURCES:
             return False
-        for f in cls._SUPPLEMENT_FIELDS:
+        fields = (
+            cls._ETF_SUPPLEMENT_FIELDS
+            if stock_code and _is_etf_code(stock_code)
+            else cls._SUPPLEMENT_FIELDS
+        )
+        for f in fields:
             if getattr(quote, f, None) is None:
                 return True
         return False
@@ -1717,6 +1747,7 @@ class DataFetcherManager:
         route: List[Tuple[str, Dict[str, Any]]],
         *,
         accept_sparse_public: bool = False,
+        enrich: bool = True,
     ):
         """Try a market-specific route and enrich the first successful quote."""
         primary_quote = None
@@ -1734,8 +1765,9 @@ class DataFetcherManager:
                     stock_code,
                     quote_source,
                 )
-                if not self._quote_needs_supplement(
+                if not enrich or not self._quote_needs_supplement(
                     primary_quote,
+                    stock_code=stock_code,
                     accept_sparse_public=accept_sparse_public,
                 ):
                     break
@@ -1752,6 +1784,7 @@ class DataFetcherManager:
                 )
             if not self._quote_needs_supplement(
                 primary_quote,
+                stock_code=stock_code,
                 accept_sparse_public=accept_sparse_public,
             ) or supplement_attempts >= 1:
                 break

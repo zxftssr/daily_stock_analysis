@@ -110,6 +110,7 @@ def test_tencent_quote_parser_normalizes_mainland_units():
     fields[4] = "1480.00"
     fields[5] = "1490.00"
     fields[6] = "123"
+    fields[30] = "20260827150003"
     fields[31] = "20.00"
     fields[32] = "1.35"
     fields[33] = "1510.00"
@@ -123,10 +124,26 @@ def test_tencent_quote_parser_normalizes_mainland_units():
 
     assert quote is not None
     assert quote.source is RealtimeSource.TENCENT
+    assert quote.observed_at == "2026-08-27T15:00:03+08:00"
     assert quote.volume == 12300
     assert quote.amount == 4567000
     assert quote.circ_mv == 100000000000
     assert quote.total_mv == 200000000000
+
+
+def test_tencent_quote_parser_keeps_price_when_observed_time_is_invalid():
+    code = resolve_public_market_code("510500")
+    fields = [""] * 50
+    fields[1] = "中证500ETF南方"
+    fields[3] = "7.973"
+    fields[4] = "7.789"
+    fields[30] = "20261399150003"
+
+    quote = PublicMarketFetcher._parse_tencent_quote(code, fields)
+
+    assert quote is not None
+    assert quote.price == 7.973
+    assert quote.observed_at is None
 
 
 def test_tencent_quote_parser_uses_market_specific_hk_and_us_fields():

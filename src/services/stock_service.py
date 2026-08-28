@@ -32,12 +32,18 @@ class StockService:
         """初始化股票数据服务"""
         self.repo = StockRepository()
     
-    def get_realtime_quote(self, stock_code: str) -> Optional[Dict[str, Any]]:
+    def get_realtime_quote(
+        self,
+        stock_code: str,
+        *,
+        enrich: bool = True,
+    ) -> Optional[Dict[str, Any]]:
         """
         获取股票实时行情
         
         Args:
             stock_code: 股票代码
+            enrich: 是否继续补充估值和活跃度字段。仅依赖价格的调用方可关闭。
             
         Returns:
             实时行情数据字典
@@ -47,7 +53,7 @@ class StockService:
             from data_provider.base import DataFetcherManager
             
             manager = DataFetcherManager()
-            quote = manager.get_realtime_quote(stock_code)
+            quote = manager.get_realtime_quote(stock_code, enrich=enrich)
             
             if quote is None:
                 logger.warning(f"获取 {stock_code} 实时行情失败")
@@ -66,6 +72,21 @@ class StockService:
             # - pre_close -> prev_close
             # - volume -> volume
             # - amount -> amount
+            observed_at = getattr(quote, "observed_at", None)
+            try:
+                if isinstance(observed_at, datetime):
+                    parsed_observed_at = observed_at
+                else:
+                    observed_at_text = str(observed_at or "").strip()
+                    if "T" not in observed_at_text and " " not in observed_at_text:
+                        raise ValueError("observed_at must include time")
+                    parsed_observed_at = datetime.fromisoformat(observed_at_text)
+                observed_at_text = parsed_observed_at.isoformat()
+                price_date = parsed_observed_at.date().isoformat()
+            except (TypeError, ValueError):
+                observed_at_text = None
+                price_date = None
+
             return {
                 "stock_code": getattr(quote, "code", stock_code),
                 "stock_name": getattr(quote, "name", None),
@@ -79,6 +100,8 @@ class StockService:
                 "prev_close": getattr(quote, "pre_close", None),
                 "volume": getattr(quote, "volume", None),
                 "amount": getattr(quote, "amount", None),
+                "observed_at": observed_at_text,
+                "price_date": price_date,
                 "update_time": datetime.now().isoformat(),
             }
             

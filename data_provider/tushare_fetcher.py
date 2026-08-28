@@ -32,7 +32,11 @@ from tenacity import (
 )
 
 from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS,is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code, _is_hk_market
-from .realtime_types import UnifiedRealtimeQuote, ChipDistribution
+from .realtime_types import (
+    UnifiedRealtimeQuote,
+    ChipDistribution,
+    normalize_cn_quote_observed_at,
+)
 from src.config import get_config
 import os
 from zoneinfo import ZoneInfo
@@ -58,6 +62,19 @@ def _is_etf_code(stock_code: str) -> bool:
     """
     code = stock_code.strip().split('.')[0]
     return code.startswith(_ETF_ALL_PREFIXES) and len(code) == 6
+
+
+def _quote_observed_at(row: Any) -> Optional[str]:
+    """Return only a timestamp supplied by Tushare's quote payload."""
+    for key in ("datetime", "trade_time"):
+        observed_at = normalize_cn_quote_observed_at(row.get(key))
+        if observed_at:
+            return observed_at
+    for key in ("date", "trade_date"):
+        observed_at = normalize_cn_quote_observed_at(row.get(key), row.get("time"))
+        if observed_at:
+            return observed_at
+    return None
 
 
 def _is_us_code(stock_code: str) -> bool:
@@ -707,6 +724,7 @@ class TushareFetcher(BaseFetcher):
                     code=normalized_code,
                     name=str(row.get('name', '')),
                     source=RealtimeSource.TUSHARE,
+                    observed_at=_quote_observed_at(row),
                     price=safe_float(row.get('price')),
                     change_pct=safe_float(row.get('pct_chg')),  # Pro 接口通常直接返回涨跌幅
                     change_amount=safe_float(row.get('change')),
@@ -754,6 +772,7 @@ class TushareFetcher(BaseFetcher):
                 code=normalized_code,
                 name=str(row['name']),
                 source=RealtimeSource.TUSHARE,
+                observed_at=_quote_observed_at(row),
                 price=price,
                 change_pct=round(change_pct, 2),
                 change_amount=round(change_amount, 2),

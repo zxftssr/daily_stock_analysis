@@ -178,6 +178,8 @@ class TestTushareFetcherFollowUps(unittest.TestCase):
                     "high": "11.00",
                     "low": "10.80",
                     "open": "10.90",
+                    "date": "2026-08-27",
+                    "time": "15:00:03",
                 }
             ]
         )
@@ -187,4 +189,5 @@ class TestTushareFetcherFollowUps(unittest.TestCase):
         self.assertIsNotNone(quote)
         self.assertEqual(quote.code, "000001")
         self.assertEqual(quote.name, "平安银行")
+        self.assertEqual(quote.observed_at, "2026-08-27T15:00:03+08:00")
         tushare_module.get_realtime_quotes.assert_called_once_with("000001")

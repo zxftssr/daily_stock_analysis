@@ -16,10 +16,12 @@
 
 import logging
 import time
+from datetime import datetime
 from threading import RLock
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, Union
 from enum import Enum
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +93,46 @@ def safe_int(val: Any, default: Optional[int] = None) -> Optional[int]:
     return default
 
 
+def normalize_cn_quote_observed_at(
+    date_or_datetime: Any,
+    time_value: Any = None,
+) -> Optional[str]:
+    """Normalize a provider-supplied China-market quote time to ISO 8601.
+
+    Only values carried by the provider are accepted. Call time must never be
+    substituted here because it would make a stale quote appear current.
+    """
+    if isinstance(date_or_datetime, datetime):
+        parsed = date_or_datetime
+    else:
+        raw_date = "" if date_or_datetime is None else str(date_or_datetime).strip()
+        if not raw_date or raw_date.lower() in {"nan", "nat", "none"}:
+            return None
+        raw_time = "" if time_value is None else str(time_value).strip()
+        candidate = f"{raw_date} {raw_time}".strip()
+        parsed = None
+        for fmt in (
+            "%Y%m%d%H%M%S",
+            "%Y%m%d%H%M",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%dT%H:%M:%S",
+        ):
+            try:
+                parsed = datetime.strptime(candidate, fmt)
+                break
+            except ValueError:
+                continue
+        if parsed is None:
+            return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+    else:
+        parsed = parsed.astimezone(ZoneInfo("Asia/Shanghai"))
+    return parsed.isoformat()
+
+
 class RealtimeSource(Enum):
     """实时行情数据源"""
     EFINANCE = "efinance"           # 东方财富（efinance库）
@@ -119,6 +161,7 @@ class UnifiedRealtimeQuote:
     code: str
     name: str = ""
     source: RealtimeSource = RealtimeSource.FALLBACK
+    observed_at: Optional[str] = None       # 数据源实际报价时间（ISO 8601）
     
     # === 核心价格数据（几乎所有源都有）===
     price: Optional[float] = None           # 最新价
@@ -162,7 +205,7 @@ class UnifiedRealtimeQuote:
             'volume_ratio', 'turnover_rate', 'amplitude',
             'open_price', 'high', 'low', 'pre_close',
             'pe_ratio', 'pb_ratio', 'total_mv', 'circ_mv',
-            'change_60d', 'high_52w', 'low_52w'
+            'change_60d', 'high_52w', 'low_52w', 'observed_at'
         ]
         for f in optional_fields:
             val = getattr(self, f, None)

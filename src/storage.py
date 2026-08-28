@@ -19,6 +19,7 @@ import logging
 import re
 import time
 from datetime import datetime, date, timedelta
+from threading import RLock
 from typing import Optional, List, Dict, Any, TYPE_CHECKING, Tuple, Callable, TypeVar
 
 import pandas as pd
@@ -727,6 +728,7 @@ class DatabaseManager:
     
     _instance: Optional['DatabaseManager'] = None
     _initialized: bool = False
+    _instance_lock = RLock()
     
     def __new__(cls, *args, **kwargs):
         """单例模式实现"""
@@ -793,18 +795,27 @@ class DatabaseManager:
     @classmethod
     def get_instance(cls) -> 'DatabaseManager':
         """获取单例实例"""
-        if cls._instance is None:
-            cls._instance = cls()
-        return cls._instance
+        with cls._instance_lock:
+            instance = cls._instance
+            if instance is None or not getattr(instance, '_initialized', False):
+                try:
+                    cls._instance = cls()
+                except Exception:
+                    broken_engine = getattr(cls._instance, '_engine', None)
+                    cls._instance = None
+                    cls._cleanup_engine(broken_engine)
+                    raise
+            return cls._instance
     
     @classmethod
     def reset_instance(cls) -> None:
         """重置单例（用于测试）"""
-        if cls._instance is not None:
-            if hasattr(cls._instance, '_engine') and cls._instance._engine is not None:
-                cls._instance._engine.dispose()
-            cls._instance._initialized = False
-            cls._instance = None
+        with cls._instance_lock:
+            if cls._instance is not None:
+                if hasattr(cls._instance, '_engine') and cls._instance._engine is not None:
+                    cls._instance._engine.dispose()
+                cls._instance._initialized = False
+                cls._instance = None
 
     @classmethod
     def _cleanup_engine(cls, engine) -> None:

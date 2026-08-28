@@ -33,6 +33,7 @@ from .realtime_types import (
     RealtimeSource,
     UnifiedRealtimeQuote,
     get_realtime_circuit_breaker,
+    normalize_cn_quote_observed_at,
     safe_float,
     safe_int,
 )
@@ -711,6 +712,11 @@ class PublicMarketFetcher(BaseFetcher):
             code=code.canonical,
             name=str(fields[1] or "").strip(),
             source=RealtimeSource.TENCENT,
+            observed_at=(
+                normalize_cn_quote_observed_at(fields[30])
+                if code.market in {"cn", "bse", "hk"} and len(fields) > 30
+                else None
+            ),
             price=price,
             change_pct=change_pct,
             change_amount=change_amount,
@@ -768,7 +774,12 @@ class PublicMarketFetcher(BaseFetcher):
                 fields[0], fields[1], fields[2], fields[3], fields[4], fields[5]
             )
             volume, amount = fields[8], fields[9]
-            extra: dict[str, Any] = {}
+            extra: dict[str, Any] = {
+                "observed_at": normalize_cn_quote_observed_at(
+                    fields[30] if len(fields) > 30 else None,
+                    fields[31] if len(fields) > 31 else None,
+                ),
+            }
         elif code.market == "hk" and len(fields) >= 13:
             name, open_value, pre_close, price, high, low = (
                 fields[1], fields[2], fields[3], fields[6], fields[4], fields[5]
@@ -817,6 +828,7 @@ class PublicMarketFetcher(BaseFetcher):
             code=code.canonical,
             name=str(name or "").strip(),
             source=RealtimeSource.SINA,
+            observed_at=extra.get("observed_at"),
             price=price_value,
             change_pct=change_pct,
             change_amount=change_amount,

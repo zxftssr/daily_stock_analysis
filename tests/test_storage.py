@@ -134,6 +134,77 @@ class TestStorage(unittest.TestCase):
                     os.environ[key] = value
             temp_dir.cleanup()
 
+    def test_get_instance_waits_for_first_initialization(self):
+        DatabaseManager.reset_instance()
+        temp_dir = tempfile.TemporaryDirectory()
+        db_url = f"sqlite:///{os.path.join(temp_dir.name, 'cold_start.db')}"
+        init_started = threading.Event()
+        release_init = threading.Event()
+        second_started = threading.Event()
+        second_returned = threading.Event()
+        results = []
+        errors = []
+        result_lock = threading.Lock()
+        original_init = DatabaseManager.__init__
+
+        def blocking_init(instance, _db_url_override=None):
+            init_started.set()
+            if not release_init.wait(timeout=2):
+                raise TimeoutError("test initialization release timed out")
+            original_init(instance, db_url=db_url)
+
+        def worker(name):
+            try:
+                if name == "second":
+                    second_started.set()
+                db = DatabaseManager.get_instance()
+                session = db.get_session()
+                session.close()
+                with result_lock:
+                    results.append(db)
+            except Exception as exc:
+                with result_lock:
+                    errors.append(exc)
+            finally:
+                if name == "second":
+                    second_returned.set()
+
+        first = threading.Thread(target=worker, args=("first",))
+        second = threading.Thread(target=worker, args=("second",))
+        try:
+            with patch.object(DatabaseManager, "__init__", new=blocking_init):
+                first.start()
+                self.assertTrue(init_started.wait(timeout=1))
+                second.start()
+                self.assertTrue(second_started.wait(timeout=1))
+                self.assertFalse(second_returned.wait(timeout=0.1))
+                release_init.set()
+                first.join(timeout=2)
+                second.join(timeout=2)
+
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(len(results), 2)
+            self.assertIs(results[0], results[1])
+            self.assertTrue(results[0]._initialized)
+        finally:
+            release_init.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+            DatabaseManager.reset_instance()
+            temp_dir.cleanup()
+
+    def test_get_instance_discards_failed_partial_instance(self):
+        DatabaseManager.reset_instance()
+        try:
+            with patch.object(DatabaseManager, "__init__", side_effect=RuntimeError("boom")):
+                with self.assertRaisesRegex(RuntimeError, "boom"):
+                    DatabaseManager.get_instance()
+            self.assertIsNone(DatabaseManager._instance)
+        finally:
+            DatabaseManager.reset_instance()
+
     def test_existing_investment_plan_tables_are_upgraded_in_place(self):
         temp_dir = tempfile.TemporaryDirectory()
         db_path = os.path.join(temp_dir.name, "legacy_investment_plans.db")

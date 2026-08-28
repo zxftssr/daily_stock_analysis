@@ -9,10 +9,11 @@ import threading
 import unittest
 from datetime import date, datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pandas as pd
 
+from data_provider.realtime_types import RealtimeSource, UnifiedRealtimeQuote
 from src.config import Config
 from src.services.investment_plan_service import (
     InvestmentPlanConflictError,
@@ -39,8 +40,11 @@ class _StockServiceStub:
         self.include_price_date = include_price_date
         self.history = history or []
         self.history_meta = history_meta or {}
+        self.quote_enrich_values = []
+        self.history_calls = []
 
-    def get_realtime_quote(self, symbol):
+    def get_realtime_quote(self, symbol, *, enrich=True):
+        self.quote_enrich_values.append(enrich)
         if self.price is None:
             return None
         payload = {
@@ -54,6 +58,7 @@ class _StockServiceStub:
         return payload
 
     def get_history_data(self, symbol, period="daily", days=400):
+        self.history_calls.append((symbol, period, days))
         return {
             "stock_code": symbol,
             "period": period,
@@ -263,6 +268,52 @@ class InvestmentPlanServiceTestCase(unittest.TestCase):
         self.assertEqual(result["metric_values"]["price"], 95)
         self.assertEqual(result["plan"]["steps"][0]["status"], "triggered")
 
+    def test_stock_service_maps_provider_time_without_fabricating_price_date(self) -> None:
+        manager = MagicMock()
+        manager.get_realtime_quote.side_effect = [
+            UnifiedRealtimeQuote(
+                code="510500",
+                source=RealtimeSource.TENCENT,
+                price=7.973,
+                observed_at="2026-08-27T15:00:03+08:00",
+            ),
+            UnifiedRealtimeQuote(
+                code="510500",
+                source=RealtimeSource.TENCENT,
+                price=7.973,
+            ),
+        ]
+        with patch("data_provider.base.DataFetcherManager", return_value=manager):
+            service = StockService()
+            dated = service.get_realtime_quote("510500", enrich=False)
+            undated = service.get_realtime_quote("510500")
+
+        self.assertEqual(dated["price_date"], "2026-08-27")
+        self.assertEqual(dated["observed_at"], "2026-08-27T15:00:03+08:00")
+        self.assertIsNone(undated["price_date"])
+        self.assertIsNone(undated["observed_at"])
+        self.assertEqual(
+            manager.get_realtime_quote.call_args_list,
+            [
+                call("510500", enrich=False),
+                call("510500", enrich=True),
+            ],
+        )
+
+    def test_dated_quote_uses_price_only_route_without_history(self) -> None:
+        stock_service = _StockServiceStub(price=95)
+        service = InvestmentPlanService(
+            stock_service=stock_service,
+            portfolio_service=self.portfolio,
+        )
+        plan = self._create_active(service)
+
+        result = service.evaluate_plan(plan["id"])
+
+        self.assertEqual(result["metric_values"]["price"], 95)
+        self.assertEqual(stock_service.quote_enrich_values, [False])
+        self.assertEqual(stock_service.history_calls, [])
+
     def test_positive_but_stale_price_never_triggers_pending_step(self) -> None:
         service = InvestmentPlanService(
             stock_service=_StockServiceStub(price=95, price_date="2020-01-02"),
@@ -275,6 +326,35 @@ class InvestmentPlanServiceTestCase(unittest.TestCase):
         self.assertEqual(result["plan"]["steps"][0]["status"], "pending")
         self.assertIn("最新价格不可用", result["errors"])
 
+    def test_stale_quote_falls_back_to_fresh_history_close(self) -> None:
+        expected_date = date(2026, 8, 27)
+        stock_service = _StockServiceStub(
+            price=120,
+            price_date="2026-08-26",
+            history=[{
+                "date": expected_date.isoformat(),
+                "open": 95,
+                "high": 96,
+                "low": 94,
+                "close": 95,
+            }],
+        )
+        service = InvestmentPlanService(
+            stock_service=stock_service,
+            portfolio_service=self.portfolio,
+        )
+        plan = self._create_active(service)
+
+        with patch(
+            "src.core.trading_calendar.get_effective_trading_date",
+            return_value=expected_date,
+        ):
+            result = service.evaluate_plan(plan["id"])
+
+        self.assertEqual(result["metric_values"]["price"], 95)
+        self.assertEqual(result["plan"]["steps"][0]["status"], "triggered")
+        self.assertEqual(stock_service.history_calls, [("600519", "daily", 30)])
+
     def test_undated_quote_uses_validated_latest_history_close(self) -> None:
         history = [{
             "date": date.today().isoformat(),
@@ -283,12 +363,13 @@ class InvestmentPlanServiceTestCase(unittest.TestCase):
             "low": 119,
             "close": 120,
         }]
+        stock_service = _StockServiceStub(
+            price=95,
+            include_price_date=False,
+            history=history,
+        )
         service = InvestmentPlanService(
-            stock_service=_StockServiceStub(
-                price=95,
-                include_price_date=False,
-                history=history,
-            ),
+            stock_service=stock_service,
             portfolio_service=self.portfolio,
         )
         plan = self._create_active(service)
@@ -297,6 +378,8 @@ class InvestmentPlanServiceTestCase(unittest.TestCase):
         self.assertEqual(result["metric_values"]["price"], 120)
         self.assertEqual(result["plan"]["last_evaluation_status"], "waiting")
         self.assertEqual(result["plan"]["steps"][0]["status"], "pending")
+        self.assertEqual(stock_service.quote_enrich_values, [False])
+        self.assertEqual(stock_service.history_calls, [("600519", "daily", 30)])
 
     def test_benchmark_drawdown_step_uses_last_250_bars(self) -> None:
         history = [

@@ -672,7 +672,10 @@ class InvestmentPlanService:
     # ------------------------------------------------------------------
     def _get_quote(self, symbol: str) -> Optional[Dict[str, Any]]:
         if symbol not in self._quote_cache:
-            self._quote_cache[symbol] = self.stock_service.get_realtime_quote(symbol)
+            self._quote_cache[symbol] = self.stock_service.get_realtime_quote(
+                symbol,
+                enrich=False,
+            )
         return self._quote_cache[symbol]
 
     def _get_validated_price(self, symbol: str, quote: Dict[str, Any]) -> Optional[float]:
@@ -691,8 +694,17 @@ class InvestmentPlanService:
                 or quote.get("quote_date")
                 or quote.get("as_of_date")
             )
+            observed_date = None
             if observed_value and raw_price is not None:
-                observed_date = date.fromisoformat(str(observed_value)[:10])
+                try:
+                    observed_date = date.fromisoformat(str(observed_value)[:10])
+                except (TypeError, ValueError):
+                    observed_date = None
+            if (
+                observed_date is not None
+                and observed_date >= expected_date
+                and raw_price is not None
+            ):
                 validated_price = raw_price
             else:
                 history = self.stock_service.get_history_data(

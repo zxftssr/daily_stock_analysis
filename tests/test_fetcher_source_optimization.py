@@ -197,6 +197,102 @@ class TestFetcherSourceOptimization(unittest.TestCase):
         public_market.get_realtime_quote.assert_called_once_with("600519.SH", source="auto")
 
     @patch("src.config.get_config")
+    def test_price_only_quotes_stop_after_first_valid_source(self, mock_get_config):
+        mock_get_config.return_value = SimpleNamespace(
+            enable_realtime_quote=True,
+            realtime_source_priority="public_auto,efinance,akshare_em",
+            longbridge_app_key="",
+            longbridge_app_secret="",
+            longbridge_access_token="",
+        )
+        for symbol in ("600519", "00700.HK"):
+            with self.subTest(symbol=symbol):
+                public_market = MagicMock()
+                public_market.name = "PublicMarketFetcher"
+                public_market.priority = 0
+                public_market.get_realtime_quote.return_value = _make_sparse_public_quote(symbol)
+                efinance = MagicMock()
+                efinance.name = "EfinanceFetcher"
+                efinance.priority = 0
+                akshare = MagicMock()
+                akshare.name = "AkshareFetcher"
+                akshare.priority = 1
+
+                manager = DataFetcherManager(fetchers=[public_market, efinance, akshare])
+                quote = manager.get_realtime_quote(symbol, enrich=False)
+
+                self.assertIsNotNone(quote)
+                public_market.get_realtime_quote.assert_called_once()
+                efinance.get_realtime_quote.assert_not_called()
+                akshare.get_realtime_quote.assert_not_called()
+
+    @patch("src.config.get_config")
+    def test_default_quote_enrichment_stops_after_one_successful_supplement(self, mock_get_config):
+        mock_get_config.return_value = SimpleNamespace(
+            enable_realtime_quote=True,
+            realtime_source_priority="public_auto,efinance,akshare_em",
+        )
+        primary = _make_sparse_public_quote("600519")
+        primary.observed_at = "2026-08-27T15:00:03+08:00"
+        secondary = UnifiedRealtimeQuote(
+            code="600519",
+            source=RealtimeSource.EFINANCE,
+            price=188.9,
+            volume_ratio=1.1,
+            observed_at="2026-08-27T15:00:04+08:00",
+        )
+        public_market = MagicMock()
+        public_market.name = "PublicMarketFetcher"
+        public_market.priority = 0
+        public_market.get_realtime_quote.return_value = primary
+        efinance = MagicMock()
+        efinance.name = "EfinanceFetcher"
+        efinance.priority = 0
+        efinance.get_realtime_quote.return_value = secondary
+        akshare = MagicMock()
+        akshare.name = "AkshareFetcher"
+        akshare.priority = 1
+        akshare.get_realtime_quote.return_value = _make_quote("600519")
+
+        manager = DataFetcherManager(fetchers=[public_market, efinance, akshare])
+        quote = manager.get_realtime_quote("600519")
+
+        self.assertIs(quote, primary)
+        self.assertEqual(quote.volume_ratio, 1.1)
+        self.assertEqual(quote.price, 188.8)
+        self.assertEqual(quote.observed_at, "2026-08-27T15:00:03+08:00")
+        efinance.get_realtime_quote.assert_called_once()
+        akshare.get_realtime_quote.assert_not_called()
+
+    @patch("src.config.get_config")
+    def test_etf_quote_does_not_require_equity_valuation_fields(self, mock_get_config):
+        mock_get_config.return_value = SimpleNamespace(
+            enable_realtime_quote=True,
+            realtime_source_priority="public_auto,efinance,akshare_em",
+        )
+        etf_quote = UnifiedRealtimeQuote(
+            code="510500",
+            source=RealtimeSource.TENCENT,
+            price=7.973,
+            volume_ratio=1.2,
+            turnover_rate=8.26,
+            amplitude=2.5,
+        )
+        public_market = MagicMock()
+        public_market.name = "PublicMarketFetcher"
+        public_market.priority = 0
+        public_market.get_realtime_quote.return_value = etf_quote
+        efinance = MagicMock()
+        efinance.name = "EfinanceFetcher"
+        efinance.priority = 0
+
+        manager = DataFetcherManager(fetchers=[public_market, efinance])
+        quote = manager.get_realtime_quote("510500")
+
+        self.assertIs(quote, etf_quote)
+        efinance.get_realtime_quote.assert_not_called()
+
+    @patch("src.config.get_config")
     def test_hk_realtime_prefers_public_auto_without_longbridge(self, mock_get_config):
         mock_get_config.return_value = SimpleNamespace(
             enable_realtime_quote=True,
