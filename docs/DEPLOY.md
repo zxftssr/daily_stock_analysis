@@ -109,6 +109,8 @@ docker-compose -f ./docker/docker-compose.yml exec -u dsa stock-analyzer python 
 
 仓库提供 `scripts/deploy_server.sh` 用于从本机把当前代码同步到已有 Docker Compose 服务器，并在远端执行 `docker compose up -d --build server`。脚本默认只重建 Web/API 服务；定时任务容器会继续按当前镜像运行。若本次更新影响了定时分析逻辑，请在脚本完成后执行：
 
+部署前，如果本机存在 `docs/DEPLOY_TARGET.local.md`，必须先读取并核对其中的服务器、SSH 用户、密钥和远端目录。该文件用于保存个人部署目标，已被 Git 忽略，禁止把真实服务器地址或凭据写入公开文档。
+
 ```bash
 ssh <user>@<server> 'cd /opt/daily_stock_analysis && docker compose -f docker/docker-compose.yml up -d --build analyzer'
 ```

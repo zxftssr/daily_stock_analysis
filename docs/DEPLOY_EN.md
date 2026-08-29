@@ -105,6 +105,8 @@ docker-compose -f ./docker/docker-compose.yml exec -u dsa stock-analyzer python 
 
 The repository includes `scripts/deploy_server.sh` for syncing the current local checkout to an existing Docker Compose server and running `docker compose up -d --build server` remotely. By default, the script rebuilds only the Web/API service; the scheduler container keeps running with the current image. If the update changes scheduled-analysis logic, run this after the script completes:
 
+Before deploying, if `docs/DEPLOY_TARGET.local.md` exists locally, read it first and verify the server, SSH user, key, and remote path. This file stores personal deployment targets, is ignored by Git, and must not be replaced by real server addresses or credentials in public documentation.
+
 ```bash
 ssh <user>@<server> 'cd /opt/daily_stock_analysis && docker compose -f docker/docker-compose.yml up -d --build analyzer'
 ```

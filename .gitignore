@@ -15,6 +15,7 @@
 /review.md
 /litellm_config.yaml
 /litellm_config.*.yaml
+/docs/DEPLOY_TARGET.local.md
 
 # Python
 __pycache__/

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [文档] 增加 Git 忽略的本机部署目标记录约定，要求部署前核对服务器、SSH 用户、密钥与远端目录
 - [修复] 调度器状态读写增加跨进程互斥并校验当前 `instance_id`，避免旧 schedule 进程延迟退出时覆盖新进程的在线状态
 - [测试] 同步 YFinance `BRK.B -> BRK-B` deterministic 脚本预期，恢复 `ci_gate.sh` 阻断检查
 - [新功能] 美股盘中每分钟策略使用 Yahoo Finance 1 分钟 K 线的交易所时间戳，仅在明确要求可验证报价时启用，并使用 15 秒短缓存；无新鲜分钟 K 时不触发
