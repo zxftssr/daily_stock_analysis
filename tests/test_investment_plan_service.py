@@ -34,6 +34,7 @@ class _StockServiceStub:
         include_price_date=True,
         include_observed_at=None,
         observed_at=None,
+        high=None,
         history=None,
         history_meta=None,
     ):
@@ -46,6 +47,7 @@ class _StockServiceStub:
             else include_observed_at
         )
         self.observed_at = observed_at or datetime.now(timezone.utc).isoformat()
+        self.high = price if high is None else high
         self.history = history or []
         self.history_meta = history_meta or {}
         self.quote_enrich_values = []
@@ -67,6 +69,7 @@ class _StockServiceStub:
             "stock_code": symbol,
             "stock_name": "测试股票",
             "current_price": self.price,
+            "high": self.high,
             "source": "unit-test",
         }
         if self.include_price_date:
@@ -87,12 +90,17 @@ class _StockServiceStub:
 
 
 class _NotifierStub:
-    def __init__(self, *, send_result=True):
+    def __init__(self, *, send_result=True, target_available=True):
         self.send_result = send_result
+        self.target_available = target_available
         self.messages = []
 
     def is_available(self):
         return True
+
+    def has_delivery_target(self, *, route_type=None, channel_values=None):
+        del route_type, channel_values
+        return self.target_available
 
     def send(self, content, route_type=None, channel_values=None):
         self.messages.append((content, route_type, channel_values))
@@ -185,13 +193,20 @@ class InvestmentPlanServiceTestCase(unittest.TestCase):
 
         sent = service.send_pending_notifications()
         self.assertTrue(sent["sent"])
+        self.assertEqual(sent["status"], "sent")
+        self.assertEqual(sent["sent_count"], 1)
         self.assertEqual(sent["step_count"], 1)
         self.assertEqual(notifier.messages[0][1], "alert")
         self.assertIn("系统不会自动下单", notifier.messages[0][0])
 
         duplicate = service.send_pending_notifications()
         self.assertFalse(duplicate["attempted"])
+        self.assertEqual(duplicate["status"], "idle")
         self.assertEqual(len(notifier.messages), 1)
+        delivered_step = service.get_plan(plan["id"])["steps"][0]
+        self.assertEqual(delivered_step["notification_status"], "sent")
+        self.assertIsNotNone(delivered_step["notification_status_at"])
+        self.assertIsNone(delivered_step["notification_error"])
 
     def test_manual_check_sends_to_selected_channel_when_enabled(self) -> None:
         notifier = _NotifierStub()
@@ -254,7 +269,126 @@ class InvestmentPlanServiceTestCase(unittest.TestCase):
         second = service.send_pending_notifications()
         self.assertFalse(first["sent"])
         self.assertFalse(second["sent"])
+        self.assertEqual(first["status"], "failed")
+        self.assertEqual(first["failed_count"], 1)
+        self.assertIn("返回发送失败", first["errors"][0])
         self.assertEqual(len(notifier.messages), 2)
+        failed_step = service.get_plan(plan["id"])["steps"][0]
+        self.assertEqual(failed_step["notification_status"], "failed")
+        self.assertIsNotNone(failed_step["notification_status_at"])
+        self.assertIn("返回发送失败", failed_step["notification_error"])
+
+    def test_unavailable_notification_channel_is_visible_and_retryable(self) -> None:
+        notifier = MagicMock()
+        notifier.is_available.return_value = False
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=95),
+            portfolio_service=self.portfolio,
+            notifier=notifier,
+        )
+        plan = self._create_active(service)
+        service.evaluate_plan(plan["id"])
+
+        result = service.send_pending_notifications()
+
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["unavailable_count"], 1)
+        step = service.get_plan(plan["id"])["steps"][0]
+        self.assertEqual(step["notification_status"], "unavailable")
+        self.assertIsNotNone(step["notification_status_at"])
+        self.assertEqual(step["notification_error"], "未配置可用的通知渠道")
+
+        completed = service.set_step_status(plan["id"], step["id"], "completed")
+        self.assertIsNone(completed["steps"][0]["notification_status"])
+        self.assertIsNone(completed["steps"][0]["notification_status_at"])
+        self.assertIsNone(completed["steps"][0]["notification_error"])
+
+    def test_closing_plan_clears_unsent_notification_retry_state(self) -> None:
+        notifier = _NotifierStub(send_result=False)
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=95),
+            portfolio_service=self.portfolio,
+            notifier=notifier,
+        )
+        plan = self._create_active(service)
+        service.evaluate_plan(plan["id"])
+        service.send_pending_notifications()
+
+        closed = service.set_plan_status(plan["id"], "closed")
+
+        self.assertIsNone(closed["steps"][0]["notification_status"])
+        self.assertIsNone(closed["steps"][0]["notification_status_at"])
+        self.assertIsNone(closed["steps"][0]["notification_error"])
+
+    def test_disabling_notifications_clears_unsent_retry_state(self) -> None:
+        notifier = _NotifierStub(send_result=False)
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=95),
+            portfolio_service=self.portfolio,
+            notifier=notifier,
+        )
+        plan = self._create_active(service)
+        service.evaluate_plan(plan["id"])
+        service.send_pending_notifications()
+
+        updated = service.update_plan(
+            plan["id"],
+            fields={"notify_on_trigger": False},
+        )
+
+        self.assertFalse(updated["notify_on_trigger"])
+        self.assertIsNone(updated["steps"][0]["notification_status"])
+        self.assertIsNone(updated["steps"][0]["notification_status_at"])
+        self.assertIsNone(updated["steps"][0]["notification_error"])
+
+    def test_successful_inflight_notification_survives_plan_close(self) -> None:
+        notifier = _BlockingNotifier()
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=95),
+            portfolio_service=self.portfolio,
+            notifier=notifier,
+        )
+        plan = self._create_active(service)
+        service.evaluate_plan(plan["id"])
+        result_holder = {}
+        worker = threading.Thread(
+            target=lambda: result_holder.setdefault(
+                "result",
+                service.send_pending_notifications(),
+            )
+        )
+        worker.start()
+        self.assertTrue(notifier.started.wait(timeout=2))
+
+        service.set_plan_status(plan["id"], "closed")
+        notifier.release.set()
+        worker.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(result_holder["result"]["sent"])
+        closed = service.get_plan(plan["id"])
+        self.assertEqual(closed["steps"][0]["notification_status"], "sent")
+        self.assertIsNotNone(closed["steps"][0]["notified_at"])
+
+    def test_selected_but_unconfigured_channel_is_unavailable_not_failed(self) -> None:
+        notifier = _NotifierStub(target_available=False)
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=95),
+            portfolio_service=self.portfolio,
+            notifier=notifier,
+        )
+        plan = self._create_active(service, notification_channels=["ntfy"])
+        service.evaluate_plan(plan["id"])
+
+        result = service.send_pending_notifications()
+
+        self.assertEqual(result["status"], "unavailable")
+        self.assertFalse(result["attempted"])
+        self.assertEqual(result["failed_count"], 0)
+        self.assertEqual(result["unavailable_count"], 1)
+        self.assertEqual(notifier.messages, [])
+        step = service.get_plan(plan["id"])["steps"][0]
+        self.assertEqual(step["notification_status"], "unavailable")
 
     def test_missing_price_never_triggers_pending_step(self) -> None:
         service = InvestmentPlanService(
@@ -469,6 +603,59 @@ class InvestmentPlanServiceTestCase(unittest.TestCase):
         self.assertEqual(stock_service.quote_enrich_values, [False])
         self.assertEqual(stock_service.quote_require_observed_at_values, [True])
 
+    def test_minute_drawdown_uses_249_completed_sessions_and_intraday_high(self) -> None:
+        observed_at = datetime(2026, 8, 28, 2, 0, tzinfo=timezone.utc)
+        first_history_date = observed_at.date() - timedelta(days=250)
+        history = [
+            {
+                "date": (first_history_date + timedelta(days=index)).isoformat(),
+                "high": 200 if index == 0 else 100,
+                "close": 100,
+            }
+            for index in range(250)
+        ]
+        stock_service = _StockServiceStub(
+            price=80,
+            high=120,
+            history=history,
+            observed_at=observed_at.isoformat(),
+        )
+        service = InvestmentPlanService(
+            stock_service=stock_service,
+            portfolio_service=self.portfolio,
+        )
+        plan = self._create_active(
+            service,
+            symbol="510300",
+            strategy_type="index_crash",
+            benchmark_symbol="510300",
+            check_frequency="minute",
+            steps=[self._step(
+                metric="benchmark_drawdown_250d_pct",
+                operator="gte",
+                threshold=30,
+            )],
+        )
+
+        with patch.object(
+            service,
+            "_utc_now",
+            return_value=observed_at + timedelta(minutes=1),
+        ), patch(
+            "src.core.trading_calendar.is_market_trading_now",
+            return_value=True,
+        ), patch(
+            "src.services.etf_history_service.EtfHistoryService._expected_date",
+            return_value=observed_at.date() - timedelta(days=1),
+        ):
+            result = service.evaluate_plan(plan["id"])
+
+        self.assertEqual(
+            result["metric_values"]["benchmark_drawdown_250d_pct"],
+            33.3333,
+        )
+        self.assertEqual(result["plan"]["steps"][0]["status"], "triggered")
+
     def test_minute_plan_does_not_fallback_to_daily_close_without_live_quote(self) -> None:
         history = [{
             "date": date.today().isoformat(),
@@ -579,23 +766,11 @@ class InvestmentPlanServiceTestCase(unittest.TestCase):
         self.assertEqual(result["plan"]["last_evaluation_status"], "data_missing")
         self.assertEqual(result["plan"]["steps"][0]["status"], "pending")
 
-    def test_minute_frequency_rejects_unsupported_us_market(self) -> None:
+    def test_minute_frequency_accepts_us_market(self) -> None:
         service = InvestmentPlanService(
             stock_service=_StockServiceStub(price=95),
             portfolio_service=self.portfolio,
         )
-
-        with self.assertRaisesRegex(ValueError, "supports cn and hk"):
-            service.create_plan(
-                symbol="AAPL",
-                market="us",
-                strategy_type="value",
-                status="active",
-                thesis="现金流稳定",
-                invalidation_note="盈利持续恶化",
-                check_frequency="minute",
-                steps=[self._step()],
-            )
 
         us_plan = service.create_plan(
             symbol="AAPL",
@@ -604,14 +779,10 @@ class InvestmentPlanServiceTestCase(unittest.TestCase):
             status="active",
             thesis="现金流稳定",
             invalidation_note="盈利持续恶化",
-            check_frequency="hourly",
+            check_frequency="minute",
             steps=[self._step()],
         )
-        with self.assertRaisesRegex(ValueError, "supports cn and hk"):
-            service.update_plan(
-                us_plan["id"],
-                fields={"check_frequency": "minute"},
-            )
+        self.assertEqual(us_plan["check_frequency"], "minute")
 
     def test_default_index_window_reaches_250_bars_through_real_history_loader(self) -> None:
         dates = pd.bdate_range(end=date.today(), periods=260)
@@ -666,8 +837,13 @@ class InvestmentPlanServiceTestCase(unittest.TestCase):
         ]
         for metadata in ({"stale": True}, {"partial_cache": True}):
             with self.subTest(metadata=metadata):
+                case_history = history if metadata.get("stale") else history[:-1]
                 service = InvestmentPlanService(
-                    stock_service=_StockServiceStub(price=8, history=history, history_meta=metadata),
+                    stock_service=_StockServiceStub(
+                        price=8,
+                        history=case_history,
+                        history_meta=metadata,
+                    ),
                     portfolio_service=self.portfolio,
                 )
                 plan = service.create_plan(
@@ -1680,7 +1856,12 @@ class InvestmentPlanServiceTestCase(unittest.TestCase):
         )
         minute_plan = self._create_active(service, check_frequency="minute")
 
-        result = service.evaluate_active_plans(check_frequencies={"minute"})
+        with patch.object(
+            service,
+            "get_plan",
+            side_effect=AssertionError("batch evaluation must reuse listed snapshots"),
+        ):
+            result = service.evaluate_active_plans(check_frequencies={"minute"})
 
         self.assertEqual(result["evaluated"], 1)
         self.assertEqual(result["results"][0]["plan"]["id"], minute_plan["id"])

@@ -7,6 +7,7 @@ import type {
   InvestmentPlanExecutionRequest,
   InvestmentPlanItem,
   InvestmentPlanListResponse,
+  InvestmentPlanSchedulerStatus,
   InvestmentPlanStatus,
   InvestmentPlanStepInput,
   InvestmentPlanStepStatus,
@@ -75,6 +76,13 @@ const serializePlan = (payload: InvestmentPlanCreateRequest | InvestmentPlanUpda
 });
 
 export const investmentPlansApi = {
+  async getSchedulerStatus(): Promise<InvestmentPlanSchedulerStatus> {
+    const response = await apiClient.get<Record<string, unknown>>(
+      '/api/v1/investment-plans/scheduler-status',
+    );
+    return toCamelCase<InvestmentPlanSchedulerStatus>(response.data);
+  },
+
   async list(query: ListQuery = {}): Promise<InvestmentPlanListResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/investment-plans', {
       params: {

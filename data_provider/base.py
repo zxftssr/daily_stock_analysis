@@ -1744,7 +1744,15 @@ class DataFetcherManager:
         if fetcher is None or not hasattr(fetcher, 'get_realtime_quote'):
             return None
         try:
-            q = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, **kw)
+            require_observed_at = bool(kw.pop("require_observed_at", False))
+            method = (
+                "get_realtime_quote_with_timestamp"
+                if require_observed_at
+                and fetcher_name == "YfinanceFetcher"
+                and hasattr(fetcher, "get_realtime_quote_with_timestamp")
+                else "get_realtime_quote"
+            )
+            q = self._call_fetcher_method(fetcher, method, stock_code, **kw)
             if q is not None and q.has_basic_data():
                 return q
         except Exception as e:
@@ -1765,7 +1773,12 @@ class DataFetcherManager:
         primary_quote = None
         supplement_attempts = 0
         for fetcher_name, kwargs in route:
-            quote = self._try_fetcher_quote(stock_code, fetcher_name, **kwargs)
+            quote = self._try_fetcher_quote(
+                stock_code,
+                fetcher_name,
+                require_observed_at=require_observed_at,
+                **kwargs,
+            )
             if quote is None:
                 continue
             if require_observed_at and not getattr(quote, "observed_at", None):

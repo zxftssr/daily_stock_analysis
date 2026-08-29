@@ -5,6 +5,7 @@ export type InvestmentPlanStepMetric = 'price' | 'benchmark_drawdown_250d_pct';
 export type InvestmentPlanStepOperator = 'lte' | 'gte' | 'between';
 export type InvestmentPlanStepStatus = 'pending' | 'triggered' | 'completed' | 'skipped';
 export type InvestmentPlanCheckFrequency = 'minute' | 'daily' | 'hourly' | 'manual';
+export type InvestmentPlanNotificationStatus = 'pending' | 'sent' | 'failed' | 'unavailable';
 export type InvestmentPlanNotificationChannel =
   | 'wechat' | 'feishu' | 'telegram' | 'email' | 'pushover' | 'ntfy' | 'gotify'
   | 'pushplus' | 'serverchan3' | 'custom' | 'discord' | 'slack' | 'astrbot';
@@ -34,6 +35,9 @@ export interface InvestmentPlanStepItem extends InvestmentPlanStepInput {
   executionFee?: number | null;
   executionNote?: string | null;
   notifiedAt?: string | null;
+  notificationStatus?: InvestmentPlanNotificationStatus | null;
+  notificationStatusAt?: string | null;
+  notificationError?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
 }
@@ -66,6 +70,33 @@ export interface InvestmentPlanExecutionRequest {
   quantity: number;
   fee?: number;
   note?: string | null;
+}
+
+export interface InvestmentPlanMinuteCheckStatus {
+  status: 'running' | 'completed' | 'partial' | 'failed' | 'skipped_market_closed';
+  startedAt?: string | null;
+  completedAt?: string | null;
+  markets: Array<'cn' | 'hk' | 'us'>;
+  evaluated: number;
+  triggered: number;
+  errorCount: number;
+  notificationSent: boolean;
+  message?: string | null;
+}
+
+export interface InvestmentPlanSchedulerStatus {
+  status: 'online' | 'offline' | 'not_started' | 'unavailable';
+  online: boolean;
+  message: string;
+  staleAfterSeconds: number;
+  heartbeatAgeSeconds?: number | null;
+  instanceId?: string | null;
+  pid?: number | null;
+  startedAt?: string | null;
+  heartbeatAt?: string | null;
+  stoppedAt?: string | null;
+  scheduleTime?: string | null;
+  minuteCheck?: InvestmentPlanMinuteCheckStatus | null;
 }
 
 export interface InvestmentPlanItem {

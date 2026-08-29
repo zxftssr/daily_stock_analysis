@@ -48,6 +48,56 @@ class _FakeScheduleModule:
 
 
 class SchedulerBackgroundTaskTestCase(unittest.TestCase):
+    def test_scheduler_heartbeat_callback_isolated_from_failure(self):
+        fake_schedule = _FakeScheduleModule()
+        heartbeat = MagicMock(side_effect=RuntimeError("status unavailable"))
+        with patch.dict(sys.modules, {"schedule": fake_schedule}):
+            from src.scheduler import Scheduler
+
+            scheduler = Scheduler(
+                schedule_time="18:00",
+                heartbeat_callback=heartbeat,
+            )
+            scheduler._emit_heartbeat()
+
+        heartbeat.assert_called_once_with()
+
+    def test_shutdown_status_is_emitted_before_waiting_for_daily_worker(self):
+        fake_schedule = _FakeScheduleModule()
+        order = []
+        worker = MagicMock()
+        worker.is_alive.return_value = True
+        worker.join.side_effect = lambda: order.append("joined")
+        with patch.dict(sys.modules, {"schedule": fake_schedule}):
+            from src.scheduler import Scheduler
+
+            scheduler = Scheduler(
+                schedule_time="18:00",
+                shutdown_callback=lambda: order.append("stopped"),
+            )
+            scheduler._daily_thread = worker
+            scheduler.shutdown_handler.request_shutdown()
+            scheduler.run()
+
+        self.assertEqual(order, ["stopped", "joined"])
+
+    def test_shutdown_waits_for_active_background_worker(self):
+        fake_schedule = _FakeScheduleModule()
+        worker = MagicMock()
+        worker.is_alive.return_value = True
+        with patch.dict(sys.modules, {"schedule": fake_schedule}):
+            from src.scheduler import Scheduler
+
+            scheduler = Scheduler(schedule_time="18:00")
+            scheduler._background_tasks.append({
+                "name": "minute",
+                "thread": worker,
+            })
+            scheduler.shutdown_handler.request_shutdown()
+            scheduler.run()
+
+        worker.join.assert_called_once_with()
+
     def test_background_task_runs_when_interval_elapsed(self):
         fake_schedule = _FakeScheduleModule()
         with patch.dict(sys.modules, {"schedule": fake_schedule}):
@@ -131,9 +181,17 @@ class SchedulerBackgroundTaskTestCase(unittest.TestCase):
             order = []
 
             class FakeScheduler:
-                def __init__(self, schedule_time="18:00", schedule_time_provider=None):
+                def __init__(
+                    self,
+                    schedule_time="18:00",
+                    schedule_time_provider=None,
+                    heartbeat_callback=None,
+                    shutdown_callback=None,
+                ):
                     order.append(("init", schedule_time))
                     order.append(("provider", callable(schedule_time_provider)))
+                    order.append(("heartbeat", callable(heartbeat_callback)))
+                    order.append(("shutdown", callable(shutdown_callback)))
 
                 def add_background_task(self, **kwargs):
                     order.append(("background", kwargs["name"]))
@@ -154,9 +212,18 @@ class SchedulerBackgroundTaskTestCase(unittest.TestCase):
                         "run_immediately": True,
                         "name": "event_monitor",
                     }],
+                    heartbeat_callback=lambda: None,
+                    shutdown_callback=lambda: None,
                 )
 
-        self.assertEqual(order[:4], [("init", "18:00"), ("provider", False), ("background", "event_monitor"), ("daily", True)])
+        self.assertEqual(order[:6], [
+            ("init", "18:00"),
+            ("provider", False),
+            ("heartbeat", True),
+            ("shutdown", True),
+            ("background", "event_monitor"),
+            ("daily", True),
+        ])
 
     def test_scheduler_reloads_daily_job_when_schedule_time_changes(self):
         fake_schedule = _FakeScheduleModule()

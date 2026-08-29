@@ -41,7 +41,7 @@ STEP_METRICS = {"price", "benchmark_drawdown_250d_pct"}
 STEP_OPERATORS = {"lte", "gte", "between"}
 STEP_STATUSES = {"pending", "triggered", "completed", "skipped"}
 CHECK_FREQUENCIES = {"minute", "daily", "hourly", "manual"}
-MINUTE_CHECK_MARKETS = {"cn", "hk"}
+MINUTE_CHECK_MARKETS = {"cn", "hk", "us"}
 MINUTE_QUOTE_MAX_AGE = timedelta(minutes=5)
 MINUTE_QUOTE_FUTURE_TOLERANCE = timedelta(minutes=1)
 
@@ -450,6 +450,16 @@ class InvestmentPlanService:
     # ------------------------------------------------------------------
     def evaluate_plan(self, plan_id: int, *, send_notification: bool = False) -> Dict[str, Any]:
         plan = self.get_plan(plan_id)
+        return self._evaluate_plan_snapshot(plan, send_notification=send_notification)
+
+    def _evaluate_plan_snapshot(
+        self,
+        plan: Dict[str, Any],
+        *,
+        send_notification: bool = False,
+    ) -> Dict[str, Any]:
+        """Evaluate a caller-owned snapshot without reloading the same plan."""
+        plan_id = int(plan["id"])
         if plan["status"] != "active":
             raise InvestmentPlanStateError("Only active investment plans can be evaluated")
 
@@ -574,7 +584,7 @@ class InvestmentPlanService:
             "blocked_reasons": blocked_reasons,
             "review_due": review_due,
             "errors": errors,
-            "notification": {"attempted": False, "sent": False, "step_count": 0},
+            "notification": self._empty_notification_result(),
         }
         if send_notification:
             result["notification"] = self.send_pending_notifications(plan_ids=[plan_id])
@@ -604,12 +614,12 @@ class InvestmentPlanService:
         errors: List[Dict[str, Any]] = []
         for plan in plans:
             try:
-                results.append(self.evaluate_plan(int(plan["id"])))
+                results.append(self._evaluate_plan_snapshot(plan))
             except Exception as exc:
                 logger.warning("投资策略计划评估失败 plan_id=%s: %s", plan.get("id"), exc, exc_info=True)
                 errors.append({"plan_id": int(plan["id"]), "message": str(exc)})
 
-        notification = {"attempted": False, "sent": False, "step_count": 0}
+        notification = self._empty_notification_result()
         evaluated_plan_ids = [int(item["plan"]["id"]) for item in results]
         if send_notification and evaluated_plan_ids:
             notification = self.send_pending_notifications(plan_ids=evaluated_plan_ids)
@@ -635,7 +645,7 @@ class InvestmentPlanService:
         )
         step_ids = [int(step["id"]) for plan in pending for step in plan["steps"]]
         if not step_ids:
-            return {"attempted": False, "sent": False, "step_count": 0}
+            return self._empty_notification_result()
 
         notifier = self.notifier or NotificationService()
         if not notifier.is_available():
@@ -643,9 +653,16 @@ class InvestmentPlanService:
                 step_ids,
                 claim_token=claim_token,
                 completed_at=datetime.now(),
-                sent=False,
+                status="unavailable",
+                error="未配置可用的通知渠道",
             )
-            return {"attempted": False, "sent": False, "step_count": len(step_ids)}
+            return {
+                **self._empty_notification_result(),
+                "status": "unavailable",
+                "step_count": len(step_ids),
+                "unavailable_count": len(step_ids),
+                "errors": ["未配置可用的通知渠道"],
+            }
 
         grouped: Dict[tuple[str, ...], List[Dict[str, Any]]] = {}
         for plan in pending:
@@ -654,6 +671,10 @@ class InvestmentPlanService:
 
         attempted = False
         sent = False
+        sent_count = 0
+        failed_count = 0
+        unavailable_count = 0
+        errors: List[str] = []
         for channel_values, plans in grouped.items():
             group_step_ids = [
                 int(step["id"])
@@ -661,16 +682,39 @@ class InvestmentPlanService:
                 for step in plan["steps"]
             ]
             group_sent = False
+            group_error: Optional[str] = None
+            delivery_values = list(channel_values) if channel_values else None
+            target_checker = getattr(notifier, "has_delivery_target", None)
+            target_available = (
+                bool(target_checker(route_type="alert", channel_values=delivery_values))
+                if callable(target_checker)
+                else notifier.is_available()
+            )
+            if not target_available:
+                group_error = "计划指定的通知渠道未配置或不可用"
+                unavailable_count += len(group_step_ids)
+                errors.append(group_error)
+                self.repo.complete_notification_claim(
+                    group_step_ids,
+                    claim_token=claim_token,
+                    completed_at=datetime.now(),
+                    status="unavailable",
+                    error=group_error,
+                )
+                continue
             try:
                 attempted = True
                 content = self._build_alert_content(plans)
                 group_sent = bool(notifier.send(
                     content,
                     route_type="alert",
-                    channel_values=list(channel_values) if channel_values else None,
+                    channel_values=delivery_values,
                 ))
                 sent = sent or group_sent
+                if not group_sent:
+                    group_error = "通知渠道返回发送失败"
             except Exception as exc:
+                group_error = "通知发送异常，请查看服务日志"
                 logger.warning(
                     "投资策略计划通知发送失败 channels=%s: %s",
                     list(channel_values) or ["alert-route"],
@@ -678,13 +722,49 @@ class InvestmentPlanService:
                     exc_info=True,
                 )
             finally:
+                if group_sent:
+                    sent_count += len(group_step_ids)
+                else:
+                    failed_count += len(group_step_ids)
+                    errors.append(group_error or "通知发送失败")
                 self.repo.complete_notification_claim(
                     group_step_ids,
                     claim_token=claim_token,
                     completed_at=datetime.now(),
-                    sent=group_sent,
+                    status="sent" if group_sent else "failed",
+                    error=group_error,
                 )
-        return {"attempted": attempted, "sent": sent, "step_count": len(step_ids)}
+        if sent_count == len(step_ids):
+            result_status = "sent"
+        elif sent_count:
+            result_status = "partial"
+        elif failed_count:
+            result_status = "failed"
+        else:
+            result_status = "unavailable"
+        return {
+            "status": result_status,
+            "attempted": attempted,
+            "sent": sent,
+            "step_count": len(step_ids),
+            "sent_count": sent_count,
+            "failed_count": failed_count,
+            "unavailable_count": unavailable_count,
+            "errors": errors,
+        }
+
+    @staticmethod
+    def _empty_notification_result() -> Dict[str, Any]:
+        return {
+            "status": "idle",
+            "attempted": False,
+            "sent": False,
+            "step_count": 0,
+            "sent_count": 0,
+            "failed_count": 0,
+            "unavailable_count": 0,
+            "errors": [],
+        }
 
     # ------------------------------------------------------------------
     # Evaluation helpers
@@ -812,6 +892,7 @@ class InvestmentPlanService:
         if cache_key in self._drawdown_cache:
             return self._drawdown_cache[cache_key]
         latest_price = None
+        latest_high = None
         if use_realtime_price:
             quote = self._get_quote(symbol, require_observed_at=True)
             latest_price = self._get_validated_price(
@@ -822,9 +903,11 @@ class InvestmentPlanService:
             if latest_price is None:
                 self._drawdown_cache[cache_key] = None
                 return None
+            latest_high = self._finite_positive((quote or {}).get("high"))
         metrics = self.etf_history_service.get_metrics(
             symbol,
             latest_price=latest_price,
+            latest_high=latest_high,
         )
         self._drawdown_cache[cache_key] = (
             metrics.drawdown_250d_pct if metrics.reliable else None
@@ -1003,7 +1086,7 @@ class InvestmentPlanService:
     @staticmethod
     def _validate_check_frequency_market(market: str, check_frequency: str) -> None:
         if check_frequency == "minute" and market not in MINUTE_CHECK_MARKETS:
-            raise ValueError("minute check frequency currently supports cn and hk markets only")
+            raise ValueError("minute check frequency currently supports cn, hk and us markets only")
 
     @classmethod
     def _normalize_steps(
@@ -1098,6 +1181,20 @@ class InvestmentPlanService:
     @classmethod
     def _decorate_plan(cls, plan: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(plan)
+        steps = []
+        for raw_step in plan.get("steps", []):
+            step = dict(raw_step)
+            if step.get("notified_at"):
+                step["notification_status"] = "sent"
+            elif (
+                step.get("status") == "triggered"
+                and plan.get("status") == "active"
+                and plan.get("notify_on_trigger")
+                and not step.get("notification_status")
+            ):
+                step["notification_status"] = "pending"
+            steps.append(step)
+        payload["steps"] = steps
         payload["strategy_label"] = STRATEGY_LABELS.get(plan["strategy_type"], plan["strategy_type"])
         payload["review_due"] = bool(
             plan.get("review_date") and plan["review_date"] <= date.today().isoformat()

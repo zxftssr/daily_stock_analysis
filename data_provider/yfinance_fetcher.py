@@ -18,9 +18,12 @@ import csv
 import logging
 from datetime import datetime, timedelta
 from io import StringIO
+import threading
+import time
 from typing import Optional, List, Dict, Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from tenacity import (
@@ -51,6 +54,8 @@ except (ImportError, ModuleNotFoundError):
 import os
 
 logger = logging.getLogger(__name__)
+_YAHOO_MINUTE_QUOTE_CACHE: Dict[str, tuple[float, UnifiedRealtimeQuote]] = {}
+_YAHOO_MINUTE_QUOTE_LOCK = threading.Lock()
 
 
 class YfinanceFetcher(BaseFetcher):
@@ -77,6 +82,64 @@ class YfinanceFetcher(BaseFetcher):
     def __init__(self):
         """初始化 YfinanceFetcher"""
         pass
+
+    def get_realtime_quote_with_timestamp(
+        self,
+        stock_code: str,
+    ) -> Optional[UnifiedRealtimeQuote]:
+        """Return the latest Yahoo 1-minute bar with its provider bar timestamp."""
+        import yfinance as yf
+
+        code = stock_code.strip().upper()
+        symbol = self._convert_stock_code(code)
+        if not (is_us_stock_code(code.removesuffix(".US")) or get_us_index_yf_symbol(code)[0]):
+            return None
+        now = time.monotonic()
+        with _YAHOO_MINUTE_QUOTE_LOCK:
+            cached = _YAHOO_MINUTE_QUOTE_CACHE.get(symbol)
+            if cached is not None and now - cached[0] <= 15:
+                return cached[1]
+        try:
+            history = yf.Ticker(symbol).history(
+                period="1d",
+                interval="1m",
+                prepost=False,
+                auto_adjust=False,
+            )
+            if history is None or history.empty:
+                return None
+            valid_history = history.dropna(subset=["Open", "High", "Low", "Close"])
+            if valid_history.empty:
+                return None
+            row = valid_history.iloc[-1]
+            observed = valid_history.index[-1]
+            if hasattr(observed, "to_pydatetime"):
+                observed = observed.to_pydatetime()
+            if not isinstance(observed, datetime):
+                return None
+            if observed.tzinfo is None or observed.utcoffset() is None:
+                observed = observed.replace(tzinfo=ZoneInfo("America/New_York"))
+            price = float(row["Close"])
+            if price <= 0:
+                return None
+            quote = UnifiedRealtimeQuote(
+                code=code.removesuffix(".US"),
+                name=STOCK_NAME_MAP.get(code.removesuffix(".US"), ""),
+                source=RealtimeSource.FALLBACK,
+                observed_at=observed.isoformat(),
+                price=price,
+                volume=int(valid_history["Volume"].fillna(0).sum()) or None,
+                open_price=float(valid_history.iloc[0]["Open"]),
+                high=float(valid_history["High"].max()),
+                low=float(valid_history["Low"].min()),
+                pre_close=None,
+            )
+            with _YAHOO_MINUTE_QUOTE_LOCK:
+                _YAHOO_MINUTE_QUOTE_CACHE[symbol] = (now, quote)
+            return quote
+        except Exception as exc:
+            logger.warning("[Yfinance] 获取美股 %s 1分钟行情失败: %s", code, exc)
+            return None
 
     def _convert_stock_code(self, stock_code: str) -> str:
         """
@@ -123,6 +186,8 @@ class YfinanceFetcher(BaseFetcher):
         # 美股：1-5 个大写字母（可选 .X 后缀），原样返回
         if is_us_stock_code(code):
             logger.debug(f"识别为美股代码: {code}")
+            if code.endswith((".A", ".B")):
+                return f"{code[:-2]}-{code[-1]}"
             return code
 
         # 港股：hk前缀 -> .HK后缀

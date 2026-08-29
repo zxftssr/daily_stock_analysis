@@ -68,6 +68,8 @@ Recommended production deployments use two containers:
 
 This keeps Web restarts from accidentally triggering analysis, and scheduler failures from directly taking the Web console offline. If you only need manual analysis from the Web UI, starting `server` is enough.
 
+The `analyzer` writes `scheduler_status.json` beside the configured database, and `server` reads it to show scheduler liveness and the latest minute check on the Strategy Plans page. The provided Compose services already share `/app/data`; custom containers or systemd units must use the same `DATABASE_PATH` directory for both processes, otherwise the page reports that the scheduler has not started. A heartbeat older than 90 seconds is shown as offline, and `restart: unless-stopped` restarts the analyzer after an unexpected process exit.
+
 Before enabling scheduled analysis, set the following in `.env`:
 
 ```env

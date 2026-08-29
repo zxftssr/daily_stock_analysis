@@ -57,6 +57,7 @@ services:
   analyzer:
     <<: *common
     container_name: stock-analyzer
+    stop_grace_period: 1m
 
   # FastAPI 模式
   server:

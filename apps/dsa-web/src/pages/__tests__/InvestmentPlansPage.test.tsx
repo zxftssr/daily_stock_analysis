@@ -10,6 +10,7 @@ vi.mock('../../api/investmentPlans', () => ({
   investmentPlansApi: {
     list: vi.fn(),
     get: vi.fn(),
+    getSchedulerStatus: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
     setStatus: vi.fn(),
@@ -95,6 +96,16 @@ describe('InvestmentPlansPage', () => {
       total: 0,
       summary: { active: 0, triggered: 0, blocked: 0, reviewDue: 0, dataMissing: 0 },
     });
+    vi.mocked(investmentPlansApi.getSchedulerStatus).mockResolvedValue({
+      status: 'not_started',
+      online: false,
+      message: '尚未检测到独立 schedule 服务',
+      staleAfterSeconds: 90,
+      heartbeatAgeSeconds: null,
+      heartbeatAt: null,
+      scheduleTime: null,
+      minuteCheck: null,
+    });
     vi.mocked(investmentPlansApi.create).mockResolvedValue(plan);
     vi.mocked(investmentPlansApi.get).mockResolvedValue(plan);
     vi.mocked(investmentPlansApi.setStatus).mockResolvedValue(plan);
@@ -118,6 +129,62 @@ describe('InvestmentPlansPage', () => {
       results: [],
       notification: { attempted: false, sent: false, stepCount: 1 },
     });
+  });
+
+  it('shows scheduler heartbeat and latest minute check status', async () => {
+    vi.mocked(investmentPlansApi.getSchedulerStatus).mockResolvedValue({
+      status: 'online',
+      online: true,
+      message: '独立 schedule 服务运行中',
+      staleAfterSeconds: 90,
+      heartbeatAgeSeconds: 3,
+      heartbeatAt: '2026-08-31T09:31:03+08:00',
+      scheduleTime: '18:00',
+      minuteCheck: {
+        status: 'completed',
+        startedAt: '2026-08-31T09:31:00+08:00',
+        completedAt: '2026-08-31T09:31:02+08:00',
+        markets: ['cn'],
+        evaluated: 2,
+        triggered: 1,
+        errorCount: 0,
+        notificationSent: true,
+        message: null,
+      },
+    });
+
+    render(
+      <MemoryRouter>
+        <InvestmentPlansPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('调度服务在线')).toBeInTheDocument();
+    expect(screen.getByText('独立 schedule 服务运行中')).toBeInTheDocument();
+    expect(screen.getByText('检查完成')).toBeInTheDocument();
+    expect(screen.getByText(/市场 CN · 检查 2 份 · 新触发 1 档 · 错误 0 项/)).toBeInTheDocument();
+  });
+
+  it('shows per-step notification failure and retry state', async () => {
+    const failedPlan: InvestmentPlanItem = {
+      ...plan,
+      steps: [{
+        ...plan.steps[0],
+        notificationStatus: 'failed',
+        notificationStatusAt: '2026-08-24T18:00:03',
+        notificationError: '通知渠道返回发送失败',
+      }],
+    };
+    vi.mocked(investmentPlansApi.list).mockResolvedValue({
+      items: [failedPlan],
+      total: 1,
+      summary: { active: 1, triggered: 1, blocked: 0, reviewDue: 0, dataMissing: 0 },
+    });
+
+    render(<MemoryRouter><InvestmentPlansPage /></MemoryRouter>);
+
+    expect(await screen.findByText(/通知失败，待重试/)).toBeInTheDocument();
+    expect(screen.getByText(/通知渠道返回发送失败/)).toBeInTheDocument();
   });
 
   it('renders the plan-first empty state and opens the editor', async () => {
@@ -708,7 +775,7 @@ describe('InvestmentPlansPage', () => {
     });
   });
 
-  it('hides minute checks for US plans and resets an incompatible selection', async () => {
+  it('keeps minute checks available for US plans', async () => {
     render(
       <MemoryRouter>
         <InvestmentPlansPage />
@@ -720,8 +787,9 @@ describe('InvestmentPlansPage', () => {
     fireEvent.change(screen.getByLabelText('自动检查频率'), { target: { value: 'minute' } });
     fireEvent.change(screen.getByLabelText('市场'), { target: { value: 'us' } });
 
-    expect(screen.getByLabelText('自动检查频率')).toHaveValue('daily');
-    expect(screen.queryByRole('option', { name: '盘中高频（每分钟）' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('自动检查频率')).toHaveValue('minute');
+    expect(screen.getByRole('option', { name: '盘中高频（每分钟）' })).toBeInTheDocument();
+    expect(screen.getByText(/支持 A 股、港股和美股/)).toBeInTheDocument();
   });
 
   it('checks every active plan without sending a user notification', async () => {

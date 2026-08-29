@@ -32,8 +32,7 @@ class GracefulShutdown:
     """
 
     def __init__(self):
-        self.shutdown_requested = False
-        self._lock = threading.Lock()
+        self._shutdown_event = threading.Event()
 
         # 注册信号处理器
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -41,16 +40,22 @@ class GracefulShutdown:
 
     def _signal_handler(self, signum, frame):
         """信号处理函数"""
-        with self._lock:
-            if not self.shutdown_requested:
-                logger.info(f"收到退出信号 ({signum})，等待当前任务完成...")
-                self.shutdown_requested = True
+        if not self._shutdown_event.is_set():
+            logger.info(f"收到退出信号 ({signum})，等待当前任务完成...")
+            self._shutdown_event.set()
+
+    def request_shutdown(self) -> None:
+        """Request shutdown and wake any interruptible scheduler wait."""
+        self._shutdown_event.set()
+
+    def wait(self, timeout_seconds: float) -> bool:
+        """Wait until shutdown is requested or the timeout elapses."""
+        return self._shutdown_event.wait(timeout_seconds)
 
     @property
     def should_shutdown(self) -> bool:
         """检查是否应该退出"""
-        with self._lock:
-            return self.shutdown_requested
+        return self._shutdown_event.is_set()
 
 
 class Scheduler:
@@ -67,6 +72,8 @@ class Scheduler:
         self,
         schedule_time: str = "18:00",
         schedule_time_provider: Optional[Callable[[], str]] = None,
+        heartbeat_callback: Optional[Callable[[], None]] = None,
+        shutdown_callback: Optional[Callable[[], None]] = None,
     ):
         """
         初始化调度器
@@ -83,6 +90,8 @@ class Scheduler:
 
         self.schedule_time = schedule_time
         self._schedule_time_provider = schedule_time_provider
+        self._heartbeat_callback = heartbeat_callback
+        self._shutdown_callback = shutdown_callback
         self.shutdown_handler = GracefulShutdown()
         self._task_callback: Optional[Callable] = None
         self._daily_job: Optional[Any] = None
@@ -293,6 +302,24 @@ class Scheduler:
                 continue
             self._start_background_task(entry)
 
+    def _emit_heartbeat(self) -> None:
+        """Emit scheduler liveness without allowing observability to stop the loop."""
+        if self._heartbeat_callback is None:
+            return
+        try:
+            self._heartbeat_callback()
+        except Exception as exc:
+            logger.warning("调度器心跳写入失败（继续运行）: %s", exc, exc_info=True)
+
+    def _emit_shutdown(self) -> None:
+        """Persist the stopping state before waiting for active workers."""
+        if self._shutdown_callback is None:
+            return
+        try:
+            self._shutdown_callback()
+        except Exception as exc:
+            logger.warning("调度器停止状态写入失败（继续退出）: %s", exc, exc_info=True)
+
     def run(self):
         """
         运行调度器主循环
@@ -302,22 +329,30 @@ class Scheduler:
         self._running = True
         logger.info("调度器开始运行...")
         logger.info(f"下次执行时间: {self._get_next_run_time()}")
+        self._emit_heartbeat()
 
         while self._running and not self.shutdown_handler.should_shutdown:
             self._refresh_daily_schedule_if_needed()
             self.schedule.run_pending()
             self._run_background_tasks()
-            time.sleep(30)  # 每30秒检查一次
+            self._emit_heartbeat()
+            self.shutdown_handler.wait(30)  # 每30秒检查一次，退出信号可立即唤醒
 
             # 每小时打印一次心跳
             if datetime.now().minute == 0 and datetime.now().second < 30:
                 logger.info(f"调度器运行中... 下次执行: {self._get_next_run_time()}")
 
+        self._emit_shutdown()
         logger.info("调度器已停止")
         daily_worker = self._daily_thread
         if daily_worker is not None and daily_worker.is_alive():
             logger.info("等待正在执行的每日定时任务完成...")
             daily_worker.join()
+        for entry in self._background_tasks:
+            worker = entry.get("thread")
+            if worker is not None and worker.is_alive():
+                logger.info("等待正在执行的后台任务完成: %s", entry["name"])
+                worker.join()
 
     def _get_next_run_time(self) -> str:
         """获取下次执行时间"""
@@ -330,6 +365,7 @@ class Scheduler:
     def stop(self):
         """停止调度器"""
         self._running = False
+        self.shutdown_handler.request_shutdown()
 
 
 def run_with_schedule(
@@ -338,6 +374,8 @@ def run_with_schedule(
     run_immediately: bool = True,
     background_tasks: Optional[List[Dict[str, Any]]] = None,
     schedule_time_provider: Optional[Callable[[], str]] = None,
+    heartbeat_callback: Optional[Callable[[], None]] = None,
+    shutdown_callback: Optional[Callable[[], None]] = None,
 ):
     """
     便捷函数：使用定时调度运行任务
@@ -351,10 +389,14 @@ def run_with_schedule(
             和 `run_immediately`。`interval_seconds` 单位为秒。
         schedule_time_provider: 可选的时间提供器；调度器每轮检查前会读取，
             当返回值变化时自动重建 daily job。
+        heartbeat_callback: 可选心跳回调；每轮调度循环调用，失败不影响任务。
+        shutdown_callback: 可选停止回调；退出主循环后、等待工作线程前调用。
     """
     scheduler = Scheduler(
         schedule_time=schedule_time,
         schedule_time_provider=schedule_time_provider,
+        heartbeat_callback=heartbeat_callback,
+        shutdown_callback=shutdown_callback,
     )
     for entry in background_tasks or []:
         scheduler.add_background_task(

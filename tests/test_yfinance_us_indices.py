@@ -210,5 +210,52 @@ class TestGetUsMainIndices(unittest.TestCase):
         self.assertEqual(result[0]['code'], 'SPX')
 
 
+class TestYahooMinuteQuote(unittest.TestCase):
+    def test_uses_latest_one_minute_bar_timestamp(self):
+        from data_provider.yfinance_fetcher import (
+            YfinanceFetcher,
+            _YAHOO_MINUTE_QUOTE_CACHE,
+        )
+
+        index = pd.DatetimeIndex([
+            "2026-08-28T09:45:00-04:00",
+            "2026-08-28T10:00:00-04:00",
+        ])
+        history = pd.DataFrame({
+            "Open": [240.0, 231.0],
+            "High": [250.0, 232.0],
+            "Low": [238.0, 229.0],
+            "Close": [245.0, 231.5],
+            "Volume": [10000, 12345],
+        }, index=index)
+        mock_yf = _make_mock_yf(history)
+        _YAHOO_MINUTE_QUOTE_CACHE.clear()
+
+        with patch.dict(sys.modules, {"yfinance": mock_yf}):
+            quote = YfinanceFetcher().get_realtime_quote_with_timestamp("AAPL")
+            cached = YfinanceFetcher().get_realtime_quote_with_timestamp("AAPL")
+
+        self.assertIsNotNone(quote)
+        self.assertEqual(quote.price, 231.5)
+        self.assertEqual(quote.high, 250.0)
+        self.assertEqual(quote.open_price, 240.0)
+        self.assertEqual(quote.low, 229.0)
+        self.assertEqual(quote.volume, 22345)
+        self.assertEqual(quote.observed_at, "2026-08-28T10:00:00-04:00")
+        self.assertIs(cached, quote)
+        mock_yf.Ticker.return_value.history.assert_called_once_with(
+            period="1d",
+            interval="1m",
+            prepost=False,
+            auto_adjust=False,
+        )
+
+    def test_converts_dot_class_share_to_yahoo_symbol(self):
+        from data_provider.yfinance_fetcher import YfinanceFetcher
+
+        self.assertEqual(YfinanceFetcher()._convert_stock_code("BRK.B"), "BRK-B")
+        self.assertEqual(YfinanceFetcher()._convert_stock_code("BRK.A"), "BRK-A")
+
+
 if __name__ == '__main__':
     unittest.main()

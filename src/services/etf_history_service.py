@@ -65,6 +65,7 @@ class EtfHistoryService:
         force_refresh: bool = False,
         allow_network: bool = True,
         latest_price: Optional[float] = None,
+        latest_high: Optional[float] = None,
     ) -> EtfHistoryMetrics:
         kwargs: dict[str, Any] = {"days": ETF_HISTORY_DAYS}
         if force_refresh:
@@ -72,7 +73,12 @@ class EtfHistoryService:
         if not allow_network:
             kwargs["allow_network"] = False
         payload = self.stock_service.get_history_data(symbol, **kwargs)
-        return self.calculate_metrics(symbol, payload, latest_price=latest_price)
+        return self.calculate_metrics(
+            symbol,
+            payload,
+            latest_price=latest_price,
+            latest_high=latest_high,
+        )
 
     @classmethod
     def calculate_metrics(
@@ -81,6 +87,7 @@ class EtfHistoryService:
         payload: dict[str, Any],
         *,
         latest_price: Optional[float] = None,
+        latest_high: Optional[float] = None,
     ) -> EtfHistoryMetrics:
         rows = list(payload.get("data") or [])
         closes = [
@@ -88,16 +95,27 @@ class EtfHistoryService:
             for row in rows
             if (value := cls._positive(row.get("close"))) is not None
         ]
-        recent_rows = rows[-250:]
-        latest = cls._positive(latest_price)
-        if latest is None:
-            latest = cls._positive(recent_rows[-1].get("close")) if recent_rows else None
+        live_latest = cls._positive(latest_price)
+        latest = live_latest
+        if live_latest is None:
+            high_rows = rows[-250:]
+            required_history_rows = 250
+            latest = cls._positive(high_rows[-1].get("close")) if high_rows else None
+        else:
+            # A live quote represents the current session. Pair it with 249
+            # completed bars so the window matches the 250-session backtest.
+            high_rows = rows[-249:]
+            required_history_rows = 249
         highs = [
             value
-            for row in recent_rows
+            for row in high_rows
             if (value := cls._positive(row.get("high")) or cls._positive(row.get("close"))) is not None
         ]
-        peak = max(highs) if len(recent_rows) >= 250 and highs else None
+        if live_latest is not None:
+            intraday_high = cls._positive(latest_high) or latest
+            if intraday_high is not None:
+                highs.append(max(intraday_high, live_latest))
+        peak = max(highs) if len(high_rows) >= required_history_rows and highs else None
         drawdown = (
             round(max(0.0, (peak - latest) / peak * 100.0), 4)
             if peak is not None and latest is not None
@@ -113,9 +131,10 @@ class EtfHistoryService:
         observed_date = cls._parse_date(payload.get("as_of_date"))
         expected_date = cls._expected_date(symbol)
         actual_records = int(payload.get("actual_records") or len(rows))
+        required_records = 249 if live_latest is not None else 250
         stale = bool(
             payload.get("stale") is True
-            or (payload.get("partial_cache") is True and actual_records < 251)
+            or (payload.get("partial_cache") is True and actual_records < required_records)
         )
         if observed_date is None or expected_date is None or observed_date < expected_date:
             stale = True

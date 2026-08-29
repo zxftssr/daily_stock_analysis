@@ -72,6 +72,8 @@ docker-compose -f ./docker/docker-compose.yml ps
 
 这样 Web 服务重启不会误触发分析，定时任务异常也不会直接拖下线 Web 管理界面。若仅需手动在 Web 里点击分析，可以只启动 `server`。
 
+`analyzer` 会在数据库同目录写入 `scheduler_status.json`，`server` 读取该文件并在“策略计划”页展示调度服务在线状态与最近分钟检查。Compose 配置已让两者共享 `/app/data`；自定义容器或 systemd 部署也必须让两个进程使用同一个 `DATABASE_PATH` 目录，否则页面会显示“调度服务未启动”。心跳超过 90 秒显示离线，`restart: unless-stopped` 会在进程异常退出后自动拉起 analyzer。
+
 启用定时任务前，建议在 `.env` 中设置：
 
 ```env

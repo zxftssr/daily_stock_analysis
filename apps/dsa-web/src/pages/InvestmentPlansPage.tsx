@@ -41,6 +41,7 @@ import type {
   InvestmentPlanExecutionRequest,
   InvestmentPlanItem,
   InvestmentPlanNotificationChannel,
+  InvestmentPlanSchedulerStatus,
   InvestmentPlanStatus,
   InvestmentPlanStepAction,
   InvestmentPlanStepInput,
@@ -139,6 +140,13 @@ const STEP_STATUS_META: Record<InvestmentPlanStepStatus, { label: string; tone: 
   skipped: { label: '已跳过', tone: 'text-muted-foreground', dot: 'border-muted-foreground bg-muted' },
 };
 
+const NOTIFICATION_STATUS_META = {
+  pending: { label: '通知待发送', tone: 'text-warning' },
+  sent: { label: '通知已发送', tone: 'text-success' },
+  failed: { label: '通知失败，待重试', tone: 'text-destructive' },
+  unavailable: { label: '通知渠道不可用，待重试', tone: 'text-destructive' },
+} as const;
+
 const EVALUATION_STATUS_LABELS: Record<string, string> = {
   waiting: '等待条件',
   triggered: '存在待处理触发',
@@ -146,6 +154,21 @@ const EVALUATION_STATUS_LABELS: Record<string, string> = {
   review_due: '到期复查',
   data_missing: '数据不足',
   completed: '档位已处理',
+};
+
+const SCHEDULER_STATUS_LABELS: Record<InvestmentPlanSchedulerStatus['status'], string> = {
+  online: '调度服务在线',
+  offline: '调度服务离线',
+  not_started: '调度服务未启动',
+  unavailable: '调度状态不可用',
+};
+
+const MINUTE_CHECK_STATUS_LABELS: Record<string, string> = {
+  running: '检查中',
+  completed: '检查完成',
+  partial: '部分完成',
+  failed: '检查失败',
+  skipped_market_closed: '休市跳过',
 };
 
 const reconcileTimedOutEvaluation = async (
@@ -400,6 +423,8 @@ const InvestmentPlansPage: React.FC = () => {
   });
   const [executionError, setExecutionError] = useState<string | null>(null);
   const [savingExecution, setSavingExecution] = useState(false);
+  const [schedulerStatus, setSchedulerStatus] = useState<InvestmentPlanSchedulerStatus | null>(null);
+  const [schedulerStatusLoading, setSchedulerStatusLoading] = useState(false);
 
   useEffect(() => {
     document.title = '策略计划 - DSA';
@@ -451,6 +476,28 @@ const InvestmentPlansPage: React.FC = () => {
       setAccounts(response.accounts || []);
     }).catch(() => setAccounts([]));
   }, []);
+
+  const loadSchedulerStatus = useCallback(async () => {
+    setSchedulerStatusLoading(true);
+    try {
+      setSchedulerStatus(await investmentPlansApi.getSchedulerStatus());
+    } catch {
+      setSchedulerStatus({
+        status: 'unavailable',
+        online: false,
+        message: '暂时无法读取独立 schedule 服务状态',
+        staleAfterSeconds: 90,
+      });
+    } finally {
+      setSchedulerStatusLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadSchedulerStatus();
+    const timer = window.setInterval(() => void loadSchedulerStatus(), 30_000);
+    return () => window.clearInterval(timer);
+  }, [loadSchedulerStatus]);
 
   const openCreate = useCallback((prefill?: Partial<PlanForm>) => {
     setEditingPlan(null);
@@ -979,6 +1026,55 @@ const InvestmentPlansPage: React.FC = () => {
         </div>
       </section>
 
+      <section
+        aria-label="自动检查服务状态"
+        aria-live="polite"
+        className="rounded-lg border border-border bg-card p-4 shadow-sm"
+      >
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant={schedulerStatus?.online ? 'success' : schedulerStatus?.status === 'offline' ? 'warning' : 'default'}>
+                {schedulerStatus ? SCHEDULER_STATUS_LABELS[schedulerStatus.status] : '读取调度状态'}
+              </Badge>
+              <span className="text-sm text-muted-foreground">
+                {schedulerStatus?.message || '正在读取独立 schedule 服务心跳。'}
+              </span>
+            </div>
+            <div className="mt-3 grid gap-x-6 gap-y-2 text-xs text-muted-foreground sm:grid-cols-2 lg:grid-cols-4">
+              <span>最近心跳 <strong className="text-foreground">{formatDateTime(schedulerStatus?.heartbeatAt)}</strong></span>
+              <span>每日任务 <strong className="text-foreground">{schedulerStatus?.scheduleTime || '--'}</strong></span>
+              <span>
+                最近分钟检查 <strong className="text-foreground">
+                  {schedulerStatus?.minuteCheck
+                    ? MINUTE_CHECK_STATUS_LABELS[schedulerStatus.minuteCheck.status] || schedulerStatus.minuteCheck.status
+                    : '尚未执行'}
+                </strong>
+              </span>
+              <span>完成时间 <strong className="text-foreground">{formatDateTime(schedulerStatus?.minuteCheck?.completedAt)}</strong></span>
+            </div>
+            {schedulerStatus?.minuteCheck ? (
+              <p className="mt-2 text-xs text-muted-foreground">
+                市场 {schedulerStatus.minuteCheck.markets.length > 0 ? schedulerStatus.minuteCheck.markets.join(' / ').toUpperCase() : '--'}
+                {' · '}检查 {schedulerStatus.minuteCheck.evaluated} 份
+                {' · '}新触发 {schedulerStatus.minuteCheck.triggered} 档
+                {' · '}错误 {schedulerStatus.minuteCheck.errorCount} 项
+              </p>
+            ) : null}
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void loadSchedulerStatus()}
+            isLoading={schedulerStatusLoading}
+            loadingText="刷新中"
+          >
+            <RefreshCw className="h-4 w-4" />
+            刷新状态
+          </Button>
+        </div>
+      </section>
+
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <SummaryTile label="执行中" value={summary.active} icon={<Play className="h-4 w-4" />} tone="success" />
         <SummaryTile label="已触发" value={summary.triggered} icon={<BellRing className="h-4 w-4" />} tone="warning" />
@@ -1373,6 +1469,9 @@ const PlanCard: React.FC<{
           <div className="relative space-y-0 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
             {plan.steps.map((step) => {
               const meta = STEP_STATUS_META[step.status];
+              const notificationMeta = step.notificationStatus
+                ? NOTIFICATION_STATUS_META[step.notificationStatus]
+                : null;
               const isEtfBuyStep = plan.strategyType === 'index_crash' && ['buy', 'add'].includes(step.action);
               const needsLegacyBackfill = isEtfBuyStep && step.status === 'completed' && step.executionAmount == null;
               return (
@@ -1419,6 +1518,13 @@ const PlanCard: React.FC<{
                       {step.executionAmount != null ? <span>金额 {formatMoney(step.executionAmount, plan.market)}</span> : null}
                       {step.executionFee != null ? <span>手续费 {formatMoney(step.executionFee, plan.market)}</span> : null}
                       {step.executionNote ? <span>{step.executionNote}</span> : null}
+                      {notificationMeta ? (
+                        <span className={notificationMeta.tone}>
+                          {notificationMeta.label}
+                          {step.notificationStatusAt ? ` · ${formatDateTime(step.notificationStatusAt)}` : ''}
+                          {step.notificationError ? ` · ${step.notificationError}` : ''}
+                        </span>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -1499,13 +1605,7 @@ const PlanEditorDrawer: React.FC<{
           <Select
             label="市场"
             value={form.market}
-            onChange={(value) => {
-              const market = value as PlanForm['market'];
-              onFormChange({
-                market,
-                ...(market === 'us' && form.checkFrequency === 'minute' ? { checkFrequency: 'daily' } : {}),
-              });
-            }}
+            onChange={(value) => onFormChange({ market: value as PlanForm['market'] })}
             options={MARKET_OPTIONS}
             disabled={Boolean(editingPlan)}
           />
@@ -1553,12 +1653,10 @@ const PlanEditorDrawer: React.FC<{
               label="自动检查频率"
               value={form.checkFrequency}
               onChange={(value) => onFormChange({ checkFrequency: value as InvestmentPlanCheckFrequency })}
-              options={form.market === 'us'
-                ? CHECK_FREQUENCY_OPTIONS.filter((item) => item.value !== 'minute')
-                : CHECK_FREQUENCY_OPTIONS}
+              options={CHECK_FREQUENCY_OPTIONS}
             />
             <p className="mt-1 text-xs text-muted-foreground">
-              自动检查需持续运行 schedule 服务；盘中高频仅支持 A 股/港股，并只在对应市场交易时段执行。
+              自动检查需持续运行 schedule 服务；盘中高频支持 A 股、港股和美股，并只在对应市场交易时段执行。
             </p>
           </div>
           <div>

@@ -17,6 +17,7 @@ from src.services.etf_crash_backtest_service import (
     EtfCrashBacktestService,
     EtfCrashRobustnessService,
 )
+from src.services.etf_history_service import EtfHistoryService
 
 
 class _FakeDb:
@@ -116,6 +117,45 @@ def test_staged_drawdown_backtest_triggers_cumulative_target_positions():
     assert result["total_return_pct"] < 0
     assert result["buy_hold_return_pct"] == -30.0
     assert result["capital_utilization_pct"] > 0
+
+
+def test_live_and_backtest_drawdown_use_the_same_250_session_window():
+    first = date(2025, 1, 1)
+    rows = [
+        SimpleNamespace(
+            date=first + timedelta(days=index),
+            high=200.0 if index == 0 else (120.0 if index == 250 else 100.0),
+            close=80.0 if index == 250 else 100.0,
+        )
+        for index in range(251)
+    ]
+    backtest = EtfCrashBacktestService(_FakeDb(rows), [_entry()]).run(
+        symbol="510300",
+        start_date=rows[-1].date,
+        end_date=rows[-1].date,
+        initial_capital=100000,
+        stages=[{"drawdown_pct": 30, "target_position_pct": 20}],
+    )
+    history_payload = {
+        "source": "unit-test",
+        "stale": False,
+        "partial_cache": False,
+        "as_of_date": "2099-12-31",
+        "actual_records": 250,
+        "data": [
+            {"date": row.date.isoformat(), "high": row.high, "close": row.close}
+            for row in rows[:-1]
+        ],
+    }
+    live = EtfHistoryService.calculate_metrics(
+        "510300",
+        history_payload,
+        latest_price=rows[-1].close,
+        latest_high=rows[-1].high,
+    )
+
+    assert backtest["equity_curve"][0]["drawdown_pct"] == 33.3333
+    assert live.drawdown_250d_pct == backtest["equity_curve"][0]["drawdown_pct"]
 
 
 def test_backtest_rejects_non_monotonic_stages():

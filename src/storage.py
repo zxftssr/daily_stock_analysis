@@ -658,6 +658,9 @@ class InvestmentPlanStep(Base):
     execution_fee = Column(Float)
     execution_note = Column(String(255))
     notified_at = Column(DateTime)
+    notification_status = Column(String(16))
+    notification_status_at = Column(DateTime)
+    notification_error = Column(String(255))
     notification_claim_token = Column(String(64), index=True)
     notification_claimed_at = Column(DateTime, index=True)
     created_at = Column(DateTime, default=datetime.now, index=True)
@@ -864,6 +867,9 @@ class DatabaseManager:
             ("investment_plans", "planned_capital", "FLOAT"),
             ("investment_plan_steps", "notification_claim_token", "VARCHAR(64)"),
             ("investment_plan_steps", "notification_claimed_at", "DATETIME"),
+            ("investment_plan_steps", "notification_status", "VARCHAR(16)"),
+            ("investment_plan_steps", "notification_status_at", "DATETIME"),
+            ("investment_plan_steps", "notification_error", "VARCHAR(255)"),
             ("investment_plan_steps", "execution_date", "DATE"),
             ("investment_plan_steps", "execution_at", "DATETIME"),
             ("investment_plan_steps", "execution_price", "FLOAT"),
@@ -901,6 +907,28 @@ class DatabaseManager:
                     }
                 if column_name not in columns:
                     raise
+
+        with self._engine.begin() as connection:
+            connection.exec_driver_sql(
+                "UPDATE investment_plan_steps "
+                "SET notification_status = 'sent', "
+                "notification_status_at = COALESCE(notification_status_at, notified_at) "
+                "WHERE notified_at IS NOT NULL "
+                "AND (notification_status IS NULL OR notification_status_at IS NULL)"
+            )
+            connection.exec_driver_sql(
+                "UPDATE investment_plan_steps "
+                "SET notification_status = 'pending', "
+                "notification_status_at = COALESCE(triggered_at, updated_at, created_at) "
+                "WHERE status = 'triggered' AND notified_at IS NULL "
+                "AND notification_status IS NULL "
+                "AND EXISTS ("
+                "SELECT 1 FROM investment_plans "
+                "WHERE investment_plans.id = investment_plan_steps.plan_id "
+                "AND investment_plans.status = 'active' "
+                "AND investment_plans.notify_on_trigger = 1"
+                ")"
+            )
 
         with self._engine.begin() as connection:
             connection.exec_driver_sql(

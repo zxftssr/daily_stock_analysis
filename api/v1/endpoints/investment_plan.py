@@ -16,6 +16,7 @@ from api.v1.schemas.investment_plan import (
     InvestmentPlanExecutionRequest,
     InvestmentPlanItem,
     InvestmentPlanListResponse,
+    InvestmentPlanSchedulerStatusResponse,
     InvestmentPlanStatusRequest,
     InvestmentPlanStepStatusRequest,
     InvestmentPlanUpdateRequest,
@@ -27,6 +28,7 @@ from src.services.investment_plan_service import (
     InvestmentPlanService,
     InvestmentPlanStateError,
 )
+from src.services.scheduler_status_service import SchedulerStatusService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -81,6 +83,15 @@ def create_plan(request: InvestmentPlanCreateRequest) -> InvestmentPlanItem:
         return InvestmentPlanItem(**InvestmentPlanService().create_plan(**payload))
     except Exception as exc:
         _raise_for_plan_error(exc, "Create investment plan")
+
+
+@router.get(
+    "/scheduler-status",
+    response_model=InvestmentPlanSchedulerStatusResponse,
+    summary="Get the independent investment-plan scheduler status",
+)
+def get_scheduler_status() -> InvestmentPlanSchedulerStatusResponse:
+    return InvestmentPlanSchedulerStatusResponse(**SchedulerStatusService().get_status())
 
 
 @router.get(

@@ -587,6 +587,26 @@ class TestFetcherSourceOptimization(unittest.TestCase):
         longbridge.get_realtime_quote.assert_not_called()
 
     @patch("src.config.get_config")
+    def test_us_timestamp_required_route_uses_yahoo_minute_method(self, mock_get_config):
+        mock_get_config.return_value = SimpleNamespace(
+            enable_realtime_quote=True,
+            realtime_source_priority="public_auto",
+        )
+        yfinance = MagicMock()
+        yfinance.name = "YfinanceFetcher"
+        yfinance.priority = 4
+        quote = _make_quote("AAPL")
+        quote.observed_at = "2026-08-28T10:00:00-04:00"
+        yfinance.get_realtime_quote_with_timestamp.return_value = quote
+        manager = DataFetcherManager(fetchers=[yfinance])
+
+        result = manager.get_realtime_quote("AAPL", require_observed_at=True)
+
+        self.assertIs(result, quote)
+        yfinance.get_realtime_quote_with_timestamp.assert_called_once_with("AAPL")
+        yfinance.get_realtime_quote.assert_not_called()
+
+    @patch("src.config.get_config")
     def test_us_daily_route_skips_temporarily_unavailable_longbridge(self, mock_get_config):
         mock_get_config.return_value = SimpleNamespace(
             longbridge_app_key="app-key",

@@ -125,9 +125,23 @@ class InvestmentPlanRepository:
                 return None
             if expected_updated_at and self._datetime_to_str(row.updated_at) != expected_updated_at:
                 raise InvestmentPlanConflictError("Investment plan changed; reload and retry")
+            disable_notifications = (
+                "notify_on_trigger" in fields
+                and not bool(fields["notify_on_trigger"])
+            )
             for key, value in fields.items():
                 setattr(row, key, value)
-            row.updated_at = datetime.now()
+            now = datetime.now()
+            if disable_notifications:
+                for step in self._list_steps_in_session(session, plan_id):
+                    if step.notified_at is None:
+                        step.notification_status = None
+                        step.notification_status_at = None
+                        step.notification_error = None
+                    if step.notification_claim_token is None:
+                        step.notification_claimed_at = None
+                    step.updated_at = now
+            row.updated_at = now
             if steps is not None:
                 session.execute(delete(InvestmentPlanStep).where(InvestmentPlanStep.plan_id == plan_id))
                 for payload in steps:
@@ -154,7 +168,17 @@ class InvestmentPlanRepository:
             if expected_updated_at and self._datetime_to_str(row.updated_at) != expected_updated_at:
                 raise InvestmentPlanConflictError("Investment plan changed; reload and retry")
             row.status = status
-            row.updated_at = datetime.now()
+            now = datetime.now()
+            if status == "closed":
+                for step in self._list_steps_in_session(session, plan_id):
+                    if step.notified_at is None:
+                        step.notification_status = None
+                        step.notification_status_at = None
+                        step.notification_error = None
+                    if step.notification_claim_token is None:
+                        step.notification_claimed_at = None
+                    step.updated_at = now
+            row.updated_at = now
             session.flush()
             return self._plan_to_dict(row, self._list_steps_in_session(session, plan_id))
 
@@ -189,8 +213,8 @@ class InvestmentPlanRepository:
                 raise InvestmentPlanConflictError("Investment plan step changed; reload and retry")
             now = datetime.now()
             step.status = status
-            step.notification_claim_token = None
-            step.notification_claimed_at = None
+            if step.notification_claim_token is None:
+                step.notification_claimed_at = None
             if status == "pending":
                 step.triggered_at = None
                 step.completed_at = None
@@ -202,8 +226,15 @@ class InvestmentPlanRepository:
                 step.execution_fee = None
                 step.execution_note = None
                 step.notified_at = None
+                step.notification_status = None
+                step.notification_status_at = None
+                step.notification_error = None
             elif status in {"completed", "skipped"}:
                 step.completed_at = now
+                if step.notified_at is None:
+                    step.notification_status = None
+                    step.notification_status_at = None
+                    step.notification_error = None
             step.updated_at = now
             plan.updated_at = now
             session.flush()
@@ -274,8 +305,12 @@ class InvestmentPlanRepository:
             step.execution_amount = execution_amount
             step.execution_fee = execution_fee
             step.execution_note = execution_note
-            step.notification_claim_token = None
-            step.notification_claimed_at = None
+            if step.notification_claim_token is None:
+                step.notification_claimed_at = None
+            if step.notified_at is None:
+                step.notification_status = None
+                step.notification_status_at = None
+                step.notification_error = None
             step.updated_at = now
             plan.updated_at = now
             session.flush()
@@ -326,6 +361,10 @@ class InvestmentPlanRepository:
                         continue
                     step.status = "triggered"
                     step.triggered_at = evaluated_at
+                    step.notified_at = None
+                    step.notification_status = "pending" if plan.notify_on_trigger else None
+                    step.notification_status_at = evaluated_at if plan.notify_on_trigger else None
+                    step.notification_error = None
                     step.updated_at = evaluated_at
                     newly_triggered.append(int(step.id))
 
@@ -382,6 +421,9 @@ class InvestmentPlanRepository:
             for step in steps:
                 step.notification_claim_token = claim_token
                 step.notification_claimed_at = claimed_at
+                step.notification_status = "pending"
+                step.notification_status_at = claimed_at
+                step.notification_error = None
                 step.updated_at = claimed_at
 
             plans = session.execute(
@@ -406,7 +448,8 @@ class InvestmentPlanRepository:
         *,
         claim_token: str,
         completed_at: datetime,
-        sent: bool,
+        status: str,
+        error: Optional[str] = None,
     ) -> None:
         ids = {int(step_id) for step_id in step_ids}
         if not ids:
@@ -420,9 +463,34 @@ class InvestmentPlanRepository:
                     )
                 )
             ).scalars().all()
+            plan_ids = {int(step.plan_id) for step in steps}
+            plans = {
+                int(plan.id): plan
+                for plan in session.execute(
+                    select(InvestmentPlan).where(InvestmentPlan.id.in_(plan_ids))
+                ).scalars().all()
+            } if plan_ids else {}
             for step in steps:
-                if sent and step.status == "triggered" and step.notified_at is None:
+                plan = plans.get(int(step.plan_id))
+                retry_eligible = bool(
+                    plan is not None
+                    and plan.status == "active"
+                    and plan.notify_on_trigger
+                    and step.status == "triggered"
+                )
+                if status == "sent":
                     step.notified_at = completed_at
+                    step.notification_status = "sent"
+                    step.notification_status_at = completed_at
+                    step.notification_error = None
+                elif retry_eligible:
+                    step.notification_status = status
+                    step.notification_status_at = completed_at
+                    step.notification_error = str(error or "").strip()[:255] or None
+                else:
+                    step.notification_status = None
+                    step.notification_status_at = None
+                    step.notification_error = None
                 step.notification_claim_token = None
                 step.notification_claimed_at = None
                 step.updated_at = completed_at
@@ -516,6 +584,11 @@ class InvestmentPlanRepository:
             "execution_fee": float(row.execution_fee) if row.execution_fee is not None else None,
             "execution_note": row.execution_note,
             "notified_at": row.notified_at.isoformat() if row.notified_at else None,
+            "notification_status": row.notification_status,
+            "notification_status_at": (
+                row.notification_status_at.isoformat() if row.notification_status_at else None
+            ),
+            "notification_error": row.notification_error,
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }

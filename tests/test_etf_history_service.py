@@ -92,6 +92,47 @@ def test_latest_price_updates_drawdown_without_rewriting_daily_history():
     assert result.reliable is True
 
 
+def test_live_drawdown_rolls_to_249_completed_bars_plus_current_session():
+    payload = _history_payload()
+    payload["data"] = [
+        {
+            "date": f"2025-{(index // 28) + 1:02d}-{(index % 28) + 1:02d}",
+            "high": 200.0 if index == 0 else 100.0,
+            "close": 100.0,
+        }
+        for index in range(250)
+    ]
+    payload["actual_records"] = 250
+
+    result = EtfHistoryService.calculate_metrics(
+        "510300",
+        payload,
+        latest_price=80,
+        latest_high=120,
+    )
+
+    assert result.drawdown_250d_pct == 33.3333
+    assert result.reliable is True
+
+
+def test_live_drawdown_accepts_partial_cache_with_249_completed_bars():
+    payload = _history_payload()
+    payload["data"] = payload["data"][-249:]
+    payload["actual_records"] = 249
+    payload["partial_cache"] = True
+
+    result = EtfHistoryService.calculate_metrics(
+        "510300",
+        payload,
+        latest_price=80,
+        latest_high=90,
+    )
+
+    assert result.drawdown_250d_pct == 20.0
+    assert result.reliable is True
+    assert result.stale is False
+
+
 def test_warmup_isolates_symbol_failure_and_forwards_force_refresh():
     stock_service = _StockServiceStub()
     result = warm_etf_history_pool(

@@ -21,6 +21,7 @@ NotificationChannel = Literal[
     "wechat", "feishu", "telegram", "email", "pushover", "ntfy", "gotify",
     "pushplus", "serverchan3", "custom", "discord", "slack", "astrbot",
 ]
+NotificationStatus = Literal["pending", "sent", "failed", "unavailable"]
 
 EXECUTION_AT_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$",
@@ -129,6 +130,9 @@ class InvestmentPlanStepItem(BaseModel):
     execution_fee: Optional[float] = None
     execution_note: Optional[str] = None
     notified_at: Optional[str] = None
+    notification_status: Optional[NotificationStatus] = None
+    notification_status_at: Optional[str] = None
+    notification_error: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -218,3 +222,30 @@ class InvestmentPlanBatchEvaluationResponse(BaseModel):
     errors: List[dict] = Field(default_factory=list)
     results: List[InvestmentPlanEvaluationResponse] = Field(default_factory=list)
     notification: Dict[str, object] = Field(default_factory=dict)
+
+
+class InvestmentPlanMinuteCheckStatus(BaseModel):
+    status: Literal["running", "completed", "partial", "failed", "skipped_market_closed"]
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    markets: List[Literal["cn", "hk", "us"]] = Field(default_factory=list)
+    evaluated: int = 0
+    triggered: int = 0
+    error_count: int = 0
+    notification_sent: bool = False
+    message: Optional[str] = None
+
+
+class InvestmentPlanSchedulerStatusResponse(BaseModel):
+    status: Literal["online", "offline", "not_started", "unavailable"]
+    online: bool
+    message: str
+    stale_after_seconds: int
+    heartbeat_age_seconds: Optional[int] = None
+    instance_id: Optional[str] = None
+    pid: Optional[int] = None
+    started_at: Optional[str] = None
+    heartbeat_at: Optional[str] = None
+    stopped_at: Optional[str] = None
+    schedule_time: Optional[str] = None
+    minute_check: Optional[InvestmentPlanMinuteCheckStatus] = None

@@ -372,6 +372,21 @@ class NotificationService(
         """获取所有已配置的渠道"""
         return self._available_channels
 
+    def has_delivery_target(
+        self,
+        *,
+        route_type: Optional[str] = None,
+        channel_values: Optional[List[str]] = None,
+    ) -> bool:
+        """Return whether a send request resolves to at least one real target."""
+        if channel_values is None and self._has_context_channel():
+            return True
+        if channel_values is None:
+            return bool(self.get_channels_for_route(route_type))
+        valid_channels, _invalid_channels = split_notification_route_channels(channel_values)
+        allowed = set(valid_channels)
+        return any(channel.value in allowed for channel in self._available_channels)
+
     def get_channels_for_route(
         self,
         route_type: Optional[str],

@@ -97,6 +97,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         args = self._make_args(schedule=True, stocks="600519,000001")
         config = self._make_config(schedule_enabled=False)
         scheduled_call = {}
+        scheduler_status = MagicMock()
 
         def fake_run_with_schedule(
             task,
@@ -104,6 +105,8 @@ class MainScheduleModeTestCase(unittest.TestCase):
             run_immediately,
             background_tasks=None,
             schedule_time_provider=None,
+            heartbeat_callback=None,
+            shutdown_callback=None,
         ):
             scheduled_call["schedule_time"] = schedule_time
             scheduled_call["run_immediately"] = run_immediately
@@ -111,6 +114,8 @@ class MainScheduleModeTestCase(unittest.TestCase):
             scheduled_call["resolved_schedule_time"] = (
                 schedule_time_provider() if schedule_time_provider is not None else None
             )
+            if heartbeat_callback is not None:
+                heartbeat_callback()
             task()
 
         with patch("main.parse_arguments", return_value=args), \
@@ -119,8 +124,17 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main._build_schedule_time_provider", return_value=lambda: "18:00"), \
              patch("main._get_intraday_plan_evaluation_markets", return_value={"cn"}) as intraday_markets, \
              patch("main._get_plan_evaluation_markets", return_value={"cn"}), \
-             patch("main._evaluate_investment_plans") as evaluate_plans, \
+             patch("main._evaluate_investment_plans", return_value={
+                 "evaluated": 1,
+                 "triggered": 0,
+                 "errors": [],
+                 "notification": {"sent": False},
+             }) as evaluate_plans, \
              patch("main._warm_etf_history_for_daily_run") as warm_etf_history, \
+             patch(
+                 "src.services.scheduler_status_service.SchedulerStatusService",
+                 return_value=scheduler_status,
+             ), \
              patch("main.setup_logging"), \
              patch("main.run_full_analysis") as run_full_analysis, \
              patch("main.logger.warning") as warning_log, \
@@ -160,6 +174,18 @@ class MainScheduleModeTestCase(unittest.TestCase):
         ])
         run_full_analysis.assert_called_once_with(config, args, None)
         warm_etf_history.assert_called_once_with()
+        scheduler_status.mark_started.assert_called_once_with(schedule_time="18:00")
+        scheduler_status.mark_heartbeat.assert_called_once_with(schedule_time="18:00")
+        scheduler_status.mark_minute_check_started.assert_has_calls([
+            call(markets=["cn"]),
+            call(markets=[]),
+        ])
+        scheduler_status.mark_minute_check_completed.assert_any_call(
+            status="skipped_market_closed",
+            markets=[],
+            message="当前没有开市市场",
+        )
+        scheduler_status.mark_stopped.assert_called_once_with()
         warning_log.assert_any_call(
             "定时模式下检测到 --stocks 参数；计划执行将忽略启动时股票快照，并在每次运行前重新读取最新的 STOCK_LIST。"
         )
@@ -169,6 +195,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         startup_config = self._make_config(schedule_enabled=True, schedule_time="18:00")
         runtime_config = self._make_config(schedule_enabled=True, schedule_time="09:30")
         scheduled_call = {}
+        scheduler_status = MagicMock()
 
         def fake_run_with_schedule(
             task,
@@ -176,6 +203,8 @@ class MainScheduleModeTestCase(unittest.TestCase):
             run_immediately,
             background_tasks=None,
             schedule_time_provider=None,
+            heartbeat_callback=None,
+            shutdown_callback=None,
         ):
             scheduled_call["schedule_time"] = schedule_time
             scheduled_call["resolved_schedule_time"] = (
@@ -188,6 +217,10 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main._reload_runtime_config", return_value=runtime_config), \
              patch("main._build_schedule_time_provider", return_value=lambda: "09:30"), \
              patch("main._warm_etf_history_for_daily_run") as warm_etf_history, \
+             patch(
+                 "src.services.scheduler_status_service.SchedulerStatusService",
+                 return_value=scheduler_status,
+             ), \
              patch("main.setup_logging"), \
              patch("main.run_full_analysis") as run_full_analysis, \
              patch("src.scheduler.run_with_schedule", side_effect=fake_run_with_schedule):
@@ -200,6 +233,8 @@ class MainScheduleModeTestCase(unittest.TestCase):
         )
         run_full_analysis.assert_called_once_with(runtime_config, args, None)
         warm_etf_history.assert_called_once_with()
+        scheduler_status.mark_started.assert_called_once_with(schedule_time="18:00")
+        scheduler_status.mark_stopped.assert_called_once_with()
 
     def test_check_notify_returns_before_other_modes(self) -> None:
         args = self._make_args(check_notify=True, serve=True, schedule=True, market_review=True)

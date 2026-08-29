@@ -22,6 +22,7 @@ import src.auth as auth
 from api.app import create_app
 from src.config import Config
 from src.services.investment_plan_service import InvestmentPlanService
+from src.services.scheduler_status_service import SchedulerStatusService
 from src.storage import DatabaseManager
 
 
@@ -95,6 +96,7 @@ class InvestmentPlanApiTestCase(unittest.TestCase):
         self.assertTrue(plan["notify_on_trigger"])
         self.assertEqual(plan["notification_channels"], ["ntfy"])
         self.assertEqual(plan["check_frequency"], "hourly")
+        self.assertIsNone(plan["steps"][0]["notification_status"])
 
         listed = self.client.get("/api/v1/investment-plans", params={"status": "active"})
         self.assertEqual(listed.status_code, 200)
@@ -115,6 +117,10 @@ class InvestmentPlanApiTestCase(unittest.TestCase):
         self.assertEqual(evaluation["plan"]["last_evaluation_status"], "triggered")
         self.assertEqual(len(evaluation["newly_triggered_step_ids"]), 1)
         self.assertFalse(evaluation["notification"]["attempted"])
+        self.assertEqual(
+            evaluation["plan"]["steps"][0]["notification_status"],
+            "pending",
+        )
 
         step_id = evaluation["plan"]["steps"][0]["id"]
         completed = self.client.patch(
@@ -140,7 +146,31 @@ class InvestmentPlanApiTestCase(unittest.TestCase):
         self.assertEqual(created.status_code, 200, created.text)
         self.assertEqual(created.json()["check_frequency"], "minute")
 
-    def test_rejects_minute_check_frequency_for_us_market(self) -> None:
+    def test_scheduler_status_contract_reports_shared_heartbeat(self) -> None:
+        SchedulerStatusService().mark_started(schedule_time="18:00")
+
+        response = self.client.get("/api/v1/investment-plans/scheduler-status")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["status"], "online")
+        self.assertTrue(payload["online"])
+        self.assertEqual(payload["schedule_time"], "18:00")
+        self.assertIsNotNone(payload["heartbeat_at"])
+
+    def test_scheduler_status_invalid_structure_returns_unavailable(self) -> None:
+        status_path = self.db_path.parent / "scheduler_status.json"
+        status_path.write_text("{}", encoding="utf-8")
+
+        response = self.client.get("/api/v1/investment-plans/scheduler-status")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["status"], "unavailable")
+        self.assertFalse(payload["online"])
+        self.assertIsNone(payload["heartbeat_at"])
+
+    def test_accepts_minute_check_frequency_for_us_market(self) -> None:
         payload = self._payload()
         payload.update({
             "symbol": "AAPL",
@@ -150,8 +180,8 @@ class InvestmentPlanApiTestCase(unittest.TestCase):
 
         created = self.client.post("/api/v1/investment-plans", json=payload)
 
-        self.assertEqual(created.status_code, 400, created.text)
-        self.assertIn("supports cn and hk", created.json()["message"])
+        self.assertEqual(created.status_code, 200, created.text)
+        self.assertEqual(created.json()["check_frequency"], "minute")
 
     def test_duplicate_and_invalid_plan_errors(self) -> None:
         first = self.client.post("/api/v1/investment-plans", json=self._payload())

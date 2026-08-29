@@ -1011,8 +1011,18 @@ def main() -> int:
             logger.info(f"启动时立即执行: {should_run_immediately}")
 
             from src.scheduler import run_with_schedule
+            from src.services.scheduler_status_service import SchedulerStatusService
             scheduled_stock_codes = _resolve_scheduled_stock_codes(stock_codes)
             schedule_time_provider = _build_schedule_time_provider(config.schedule_time)
+            scheduler_status = SchedulerStatusService()
+            scheduler_status.mark_started(schedule_time=config.schedule_time)
+
+            def scheduler_heartbeat():
+                try:
+                    current_schedule_time = schedule_time_provider()
+                except Exception:
+                    current_schedule_time = config.schedule_time
+                scheduler_status.mark_heartbeat(schedule_time=current_schedule_time)
 
             def scheduled_task():
                 runtime_config = _reload_runtime_config()
@@ -1023,14 +1033,41 @@ def main() -> int:
 
             def minute_investment_plan_task():
                 markets = _get_intraday_plan_evaluation_markets()
+                scheduler_status.mark_minute_check_started(markets=sorted(markets))
                 if not markets:
+                    scheduler_status.mark_minute_check_completed(
+                        status="skipped_market_closed",
+                        markets=[],
+                        message="当前没有开市市场",
+                    )
                     logger.debug("盘中高频策略计划检查跳过：当前没有开市市场")
                     return
-                stats = _evaluate_investment_plans(
-                    notifier=None,
-                    send_notification=not args.no_notify,
-                    markets=markets,
-                    check_frequencies={"minute"},
+                try:
+                    stats = _evaluate_investment_plans(
+                        notifier=None,
+                        send_notification=not args.no_notify,
+                        markets=markets,
+                        check_frequencies={"minute"},
+                    )
+                except Exception:
+                    scheduler_status.mark_minute_check_completed(
+                        status="failed",
+                        markets=sorted(markets),
+                        error_count=1,
+                        message="分钟策略检查失败，请查看服务日志",
+                    )
+                    raise
+                error_count = len(stats.get("errors") or [])
+                notification_sent = bool(
+                    (stats.get("notification") or {}).get("sent", False)
+                )
+                scheduler_status.mark_minute_check_completed(
+                    status="completed" if error_count == 0 else "partial",
+                    markets=sorted(markets),
+                    evaluated=stats.get("evaluated", 0),
+                    triggered=stats.get("triggered", 0),
+                    error_count=error_count,
+                    notification_sent=notification_sent,
                 )
                 logger.info(
                     "盘中高频策略计划检查完成: evaluated=%s triggered=%s errors=%s notification_sent=%s",
@@ -1090,13 +1127,18 @@ def main() -> int:
                 else:
                     logger.info("EventMonitor 已启用，但未加载到有效规则，跳过后台提醒任务")
 
-            run_with_schedule(
-                task=scheduled_task,
-                schedule_time=config.schedule_time,
-                run_immediately=should_run_immediately,
-                background_tasks=background_tasks,
-                schedule_time_provider=schedule_time_provider,
-            )
+            try:
+                run_with_schedule(
+                    task=scheduled_task,
+                    schedule_time=config.schedule_time,
+                    run_immediately=should_run_immediately,
+                    background_tasks=background_tasks,
+                    schedule_time_provider=schedule_time_provider,
+                    heartbeat_callback=scheduler_heartbeat,
+                    shutdown_callback=scheduler_status.mark_stopped,
+                )
+            finally:
+                scheduler_status.mark_stopped()
             return 0
 
         # 模式3: 正常单次运行

@@ -258,6 +258,20 @@ class TestStorage(unittest.TestCase):
                 INSERT INTO investment_plan_steps (
                     id, plan_id, action, metric, operator, threshold, sort_order, status
                 ) VALUES (1, 1, 'buy', 'price', 'lte', 1200, 0, 'pending');
+                INSERT INTO investment_plan_steps (
+                    id, plan_id, action, metric, operator, threshold, sort_order, status,
+                    triggered_at, notified_at
+                ) VALUES (
+                    2, 1, 'add', 'price', 'lte', 1100, 1, 'completed',
+                    '2026-08-20 10:00:00', '2026-08-20 10:00:03'
+                );
+                INSERT INTO investment_plan_steps (
+                    id, plan_id, action, metric, operator, threshold, sort_order, status,
+                    triggered_at
+                ) VALUES (
+                    3, 1, 'add', 'price', 'lte', 1000, 2, 'triggered',
+                    '2026-08-21 10:00:00'
+                );
                 """
             )
             connection.commit()
@@ -270,6 +284,8 @@ class TestStorage(unittest.TestCase):
             with db.get_session() as session:
                 plan = session.get(InvestmentPlan, 1)
                 step = session.get(InvestmentPlanStep, 1)
+                sent_step = session.get(InvestmentPlanStep, 2)
+                pending_step = session.get(InvestmentPlanStep, 3)
                 plan_columns = {
                     row[1] for row in session.connection().exec_driver_sql(
                         'PRAGMA table_info("investment_plans")'
@@ -300,6 +316,13 @@ class TestStorage(unittest.TestCase):
             self.assertEqual(step.threshold, 1200)
             self.assertIsNone(step.notification_claim_token)
             self.assertIsNone(step.notification_claimed_at)
+            self.assertIsNone(step.notification_status)
+            self.assertIsNone(step.notification_status_at)
+            self.assertIsNone(step.notification_error)
+            self.assertEqual(sent_step.notification_status, "sent")
+            self.assertEqual(sent_step.notification_status_at, sent_step.notified_at)
+            self.assertEqual(pending_step.notification_status, "pending")
+            self.assertEqual(pending_step.notification_status_at, pending_step.triggered_at)
             self.assertIsNone(step.execution_date)
             self.assertIsNone(step.execution_at)
             self.assertIsNone(step.execution_price)
@@ -314,6 +337,9 @@ class TestStorage(unittest.TestCase):
             self.assertIn("planned_capital", plan_columns)
             self.assertIn("notification_claim_token", step_columns)
             self.assertIn("notification_claimed_at", step_columns)
+            self.assertIn("notification_status", step_columns)
+            self.assertIn("notification_status_at", step_columns)
+            self.assertIn("notification_error", step_columns)
             self.assertIn("execution_date", step_columns)
             self.assertIn("execution_at", step_columns)
             self.assertIn("execution_price", step_columns)
