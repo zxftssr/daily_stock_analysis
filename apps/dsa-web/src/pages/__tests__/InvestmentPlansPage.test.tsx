@@ -682,7 +682,7 @@ describe('InvestmentPlansPage', () => {
     fireEvent.change(screen.getByLabelText('什么情况下认错'), { target: { value: '盈利能力持续恶化' } });
     fireEvent.change(screen.getByLabelText('价格阈值'), { target: { value: '1400' } });
     fireEvent.change(screen.getByLabelText('执行后目标仓位 %'), { target: { value: '5' } });
-    fireEvent.change(screen.getByLabelText('自动检查频率'), { target: { value: 'hourly' } });
+    fireEvent.change(screen.getByLabelText('自动检查频率'), { target: { value: 'minute' } });
     fireEvent.change(screen.getByLabelText('通知渠道'), { target: { value: 'ntfy' } });
     fireEvent.click(screen.getByRole('button', { name: /保存并激活/ }));
 
@@ -696,7 +696,7 @@ describe('InvestmentPlansPage', () => {
         requiredCashPct: 25,
         notifyOnTrigger: true,
         notificationChannels: ['ntfy'],
-        checkFrequency: 'hourly',
+        checkFrequency: 'minute',
         steps: [expect.objectContaining({
           action: 'buy',
           metric: 'price',
@@ -706,6 +706,22 @@ describe('InvestmentPlansPage', () => {
         })],
       }));
     });
+  });
+
+  it('hides minute checks for US plans and resets an incompatible selection', async () => {
+    render(
+      <MemoryRouter>
+        <InvestmentPlansPage />
+      </MemoryRouter>,
+    );
+    await screen.findByText('还没有策略计划');
+    fireEvent.click(screen.getAllByRole('button', { name: /制定计划/ })[0]);
+
+    fireEvent.change(screen.getByLabelText('自动检查频率'), { target: { value: 'minute' } });
+    fireEvent.change(screen.getByLabelText('市场'), { target: { value: 'us' } });
+
+    expect(screen.getByLabelText('自动检查频率')).toHaveValue('daily');
+    expect(screen.queryByRole('option', { name: '盘中高频（每分钟）' })).not.toBeInTheDocument();
   });
 
   it('checks every active plan without sending a user notification', async () => {

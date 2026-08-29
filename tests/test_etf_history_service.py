@@ -80,6 +80,18 @@ def test_current_251_bar_cache_is_reliable_even_when_calendar_window_is_partial(
     assert result.stale is False
 
 
+def test_latest_price_updates_drawdown_without_rewriting_daily_history():
+    result = EtfHistoryService.calculate_metrics(
+        "510300",
+        _history_payload(),
+        latest_price=75,
+    )
+
+    assert result.drawdown_250d_pct == 25.0
+    assert result.return_20d_pct == -20.0
+    assert result.reliable is True
+
+
 def test_warmup_isolates_symbol_failure_and_forwards_force_refresh():
     stock_service = _StockServiceStub()
     result = warm_etf_history_pool(

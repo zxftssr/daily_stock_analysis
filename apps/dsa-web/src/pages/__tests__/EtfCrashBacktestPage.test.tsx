@@ -156,7 +156,7 @@ beforeEach(() => {
     invalidationNote: 'test',
     notifyOnTrigger: true,
     notificationChannels: [],
-    checkFrequency: 'daily',
+    checkFrequency: 'minute',
     reviewDue: false,
     lastBlockedReasons: [],
     triggeredStepCount: 0,
@@ -229,7 +229,7 @@ describe('EtfCrashBacktestPage', () => {
       maxPositionPct: 70,
       requiredCashPct: 30,
       notifyOnTrigger: true,
-      checkFrequency: 'daily',
+      checkFrequency: 'minute',
       steps: [
         expect.objectContaining({ action: 'buy', operator: 'gte', threshold: 10, targetPositionPct: 20 }),
         expect.objectContaining({ action: 'add', operator: 'gte', threshold: 15, targetPositionPct: 40 }),

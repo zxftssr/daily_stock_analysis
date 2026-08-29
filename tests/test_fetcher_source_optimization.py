@@ -265,6 +265,36 @@ class TestFetcherSourceOptimization(unittest.TestCase):
         akshare.get_realtime_quote.assert_not_called()
 
     @patch("src.config.get_config")
+    def test_timestamp_required_skips_undated_primary_source(self, mock_get_config):
+        mock_get_config.return_value = SimpleNamespace(
+            enable_realtime_quote=True,
+            realtime_source_priority="efinance,public_auto",
+        )
+        undated = _make_quote("510300")
+        timed = _make_sparse_public_quote("510300")
+        timed.observed_at = "2026-08-28T10:15:00+08:00"
+
+        efinance = MagicMock()
+        efinance.name = "EfinanceFetcher"
+        efinance.priority = 0
+        efinance.get_realtime_quote.return_value = undated
+        public_market = MagicMock()
+        public_market.name = "PublicMarketFetcher"
+        public_market.priority = 0
+        public_market.get_realtime_quote.return_value = timed
+
+        manager = DataFetcherManager(fetchers=[efinance, public_market])
+        quote = manager.get_realtime_quote(
+            "510300",
+            enrich=False,
+            require_observed_at=True,
+        )
+
+        self.assertIs(quote, timed)
+        efinance.get_realtime_quote.assert_called_once()
+        public_market.get_realtime_quote.assert_called_once()
+
+    @patch("src.config.get_config")
     def test_etf_quote_does_not_require_equity_valuation_fields(self, mock_get_config):
         mock_get_config.return_value = SimpleNamespace(
             enable_realtime_quote=True,

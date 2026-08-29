@@ -233,7 +233,7 @@ const EtfCrashBacktestPage: React.FC = () => {
         maxPositionPct: finalTarget,
         requiredCashPct: Math.max(0, 100 - finalTarget),
         notifyOnTrigger: true,
-        checkFrequency: 'daily',
+        checkFrequency: 'minute',
         steps: lastRequest.stages.map((stage, index) => ({
           action: index === 0 ? 'buy' : 'add',
           metric: 'benchmark_drawdown_250d_pct',

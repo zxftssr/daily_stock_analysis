@@ -2,6 +2,7 @@
 """Tests for Scheduler background task support."""
 
 from datetime import datetime
+from threading import Event
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
@@ -79,6 +80,48 @@ class SchedulerBackgroundTaskTestCase(unittest.TestCase):
                 scheduler._run_background_tasks()
 
         self.assertEqual(calls, [])
+
+    def test_blocking_daily_task_does_not_block_background_or_reenter(self):
+        fake_schedule = _FakeScheduleModule()
+        daily_started = Event()
+        release_daily = Event()
+        background_ran = Event()
+        daily_calls = []
+
+        def daily_task():
+            daily_calls.append("daily")
+            daily_started.set()
+            release_daily.wait(timeout=2)
+
+        with patch.dict(sys.modules, {"schedule": fake_schedule}):
+            from src.scheduler import Scheduler
+
+            scheduler = Scheduler(schedule_time="18:00")
+            scheduler.add_background_task(
+                background_ran.set,
+                interval_seconds=60,
+                run_immediately=False,
+                name="minute",
+            )
+            background_entry = scheduler._background_tasks[0]
+            scheduler.set_daily_task(daily_task, run_immediately=True)
+            self.assertTrue(daily_started.wait(timeout=1))
+            daily_worker = scheduler._daily_thread
+
+            with patch(
+                "src.scheduler.time.time",
+                return_value=background_entry["last_run"] + 60,
+            ):
+                scheduler._run_background_tasks()
+
+            self.assertTrue(background_ran.wait(timeout=1))
+            self.assertFalse(scheduler._start_daily_task())
+            self.assertEqual(daily_calls, ["daily"])
+            release_daily.set()
+            self.assertIsNotNone(daily_worker)
+            daily_worker.join(timeout=1)
+
+        self.assertFalse(daily_worker.is_alive())
 
     def test_run_with_schedule_registers_background_tasks_before_immediate_daily_task(self):
         fake_schedule = _FakeScheduleModule()

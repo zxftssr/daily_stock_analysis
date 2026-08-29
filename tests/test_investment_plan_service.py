@@ -7,7 +7,7 @@ import os
 import tempfile
 import threading
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
@@ -32,19 +32,35 @@ class _StockServiceStub:
         price=95.0,
         price_date=None,
         include_price_date=True,
+        include_observed_at=None,
+        observed_at=None,
         history=None,
         history_meta=None,
     ):
         self.price = price
         self.price_date = price_date or date.today().isoformat()
         self.include_price_date = include_price_date
+        self.include_observed_at = (
+            include_price_date
+            if include_observed_at is None
+            else include_observed_at
+        )
+        self.observed_at = observed_at or datetime.now(timezone.utc).isoformat()
         self.history = history or []
         self.history_meta = history_meta or {}
         self.quote_enrich_values = []
+        self.quote_require_observed_at_values = []
         self.history_calls = []
 
-    def get_realtime_quote(self, symbol, *, enrich=True):
+    def get_realtime_quote(
+        self,
+        symbol,
+        *,
+        enrich=True,
+        require_observed_at=False,
+    ):
         self.quote_enrich_values.append(enrich)
+        self.quote_require_observed_at_values.append(require_observed_at)
         if self.price is None:
             return None
         payload = {
@@ -55,6 +71,8 @@ class _StockServiceStub:
         }
         if self.include_price_date:
             payload["price_date"] = self.price_date
+        if self.include_observed_at:
+            payload["observed_at"] = self.observed_at
         return payload
 
     def get_history_data(self, symbol, period="daily", days=400):
@@ -406,6 +424,194 @@ class InvestmentPlanServiceTestCase(unittest.TestCase):
         result = service.evaluate_plan(plan["id"])
         self.assertEqual(result["metric_values"]["benchmark_drawdown_250d_pct"], 20.0)
         self.assertEqual(result["plan"]["steps"][0]["status"], "triggered")
+
+    def test_minute_plan_uses_realtime_price_for_benchmark_drawdown(self) -> None:
+        observed_at = datetime(2026, 8, 28, 2, 0, tzinfo=timezone.utc)
+        history = [
+            {"date": f"2026-{(index // 28) + 1:02d}-{(index % 28) + 1:02d}", "high": 100, "close": 100}
+            for index in range(249)
+        ]
+        history.append({"date": "2026-12-31", "high": 90, "close": 90})
+        stock_service = _StockServiceStub(
+            price=75,
+            history=history,
+            observed_at=observed_at.isoformat(),
+        )
+        service = InvestmentPlanService(
+            stock_service=stock_service,
+            portfolio_service=self.portfolio,
+        )
+        plan = self._create_active(
+            service,
+            symbol="510300",
+            strategy_type="index_crash",
+            benchmark_symbol="510300",
+            check_frequency="minute",
+            steps=[self._step(
+                metric="benchmark_drawdown_250d_pct",
+                operator="gte",
+                threshold=25,
+            )],
+        )
+
+        with patch.object(
+            service,
+            "_utc_now",
+            return_value=observed_at + timedelta(minutes=1),
+        ), patch(
+            "src.core.trading_calendar.is_market_trading_now",
+            return_value=True,
+        ):
+            result = service.evaluate_plan(plan["id"])
+
+        self.assertEqual(result["metric_values"]["benchmark_drawdown_250d_pct"], 25.0)
+        self.assertEqual(result["plan"]["steps"][0]["status"], "triggered")
+        self.assertEqual(stock_service.quote_enrich_values, [False])
+        self.assertEqual(stock_service.quote_require_observed_at_values, [True])
+
+    def test_minute_plan_does_not_fallback_to_daily_close_without_live_quote(self) -> None:
+        history = [{
+            "date": date.today().isoformat(),
+            "open": 80,
+            "high": 82,
+            "low": 78,
+            "close": 80,
+        }]
+        stock_service = _StockServiceStub(
+            price=75,
+            include_price_date=False,
+            history=history,
+        )
+        service = InvestmentPlanService(
+            stock_service=stock_service,
+            portfolio_service=self.portfolio,
+        )
+        plan = self._create_active(
+            service,
+            check_frequency="minute",
+            steps=[self._step(threshold=90)],
+        )
+
+        result = service.evaluate_plan(plan["id"])
+
+        self.assertIsNone(result["metric_values"]["price"])
+        self.assertEqual(result["plan"]["last_evaluation_status"], "data_missing")
+        self.assertEqual(result["plan"]["steps"][0]["status"], "pending")
+        self.assertEqual(stock_service.history_calls, [])
+
+    def test_minute_plan_rejects_previous_session_quote(self) -> None:
+        observed_at = datetime.now(timezone.utc) - timedelta(days=1)
+        stock_service = _StockServiceStub(
+            price=75,
+            price_date=observed_at.date().isoformat(),
+            observed_at=observed_at.isoformat(),
+        )
+        service = InvestmentPlanService(
+            stock_service=stock_service,
+            portfolio_service=self.portfolio,
+        )
+        plan = self._create_active(
+            service,
+            check_frequency="minute",
+            steps=[self._step(threshold=90)],
+        )
+
+        result = service.evaluate_plan(plan["id"])
+
+        self.assertIsNone(result["metric_values"]["price"])
+        self.assertEqual(result["plan"]["last_evaluation_status"], "data_missing")
+        self.assertEqual(result["plan"]["steps"][0]["status"], "pending")
+
+    def test_minute_plan_rejects_same_day_quote_older_than_five_minutes(self) -> None:
+        current_time = datetime(2026, 8, 28, 2, 15, tzinfo=timezone.utc)
+        observed_at = current_time - timedelta(minutes=6)
+        stock_service = _StockServiceStub(
+            price=75,
+            price_date=observed_at.date().isoformat(),
+            observed_at=observed_at.isoformat(),
+        )
+        service = InvestmentPlanService(
+            stock_service=stock_service,
+            portfolio_service=self.portfolio,
+        )
+        plan = self._create_active(
+            service,
+            check_frequency="minute",
+            steps=[self._step(threshold=90)],
+        )
+
+        with patch.object(service, "_utc_now", return_value=current_time):
+            result = service.evaluate_plan(plan["id"])
+
+        self.assertIsNone(result["metric_values"]["price"])
+        self.assertEqual(result["plan"]["last_evaluation_status"], "data_missing")
+        self.assertEqual(result["plan"]["steps"][0]["status"], "pending")
+
+    def test_minute_plan_rejects_quote_when_evaluation_crosses_lunch_break(self) -> None:
+        observed_at = datetime(
+            2026,
+            8,
+            28,
+            11,
+            29,
+            tzinfo=timezone(timedelta(hours=8)),
+        )
+        checked_at = observed_at + timedelta(minutes=2)
+        stock_service = _StockServiceStub(
+            price=75,
+            price_date=observed_at.date().isoformat(),
+            observed_at=observed_at.isoformat(),
+        )
+        service = InvestmentPlanService(
+            stock_service=stock_service,
+            portfolio_service=self.portfolio,
+        )
+        plan = self._create_active(
+            service,
+            check_frequency="minute",
+            steps=[self._step(threshold=90)],
+        )
+
+        with patch.object(service, "_utc_now", return_value=checked_at.astimezone(timezone.utc)):
+            result = service.evaluate_plan(plan["id"])
+
+        self.assertIsNone(result["metric_values"]["price"])
+        self.assertEqual(result["plan"]["last_evaluation_status"], "data_missing")
+        self.assertEqual(result["plan"]["steps"][0]["status"], "pending")
+
+    def test_minute_frequency_rejects_unsupported_us_market(self) -> None:
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=95),
+            portfolio_service=self.portfolio,
+        )
+
+        with self.assertRaisesRegex(ValueError, "supports cn and hk"):
+            service.create_plan(
+                symbol="AAPL",
+                market="us",
+                strategy_type="value",
+                status="active",
+                thesis="现金流稳定",
+                invalidation_note="盈利持续恶化",
+                check_frequency="minute",
+                steps=[self._step()],
+            )
+
+        us_plan = service.create_plan(
+            symbol="AAPL",
+            market="us",
+            strategy_type="value",
+            status="active",
+            thesis="现金流稳定",
+            invalidation_note="盈利持续恶化",
+            check_frequency="hourly",
+            steps=[self._step()],
+        )
+        with self.assertRaisesRegex(ValueError, "supports cn and hk"):
+            service.update_plan(
+                us_plan["id"],
+                fields={"check_frequency": "minute"},
+            )
 
     def test_default_index_window_reaches_250_bars_through_real_history_loader(self) -> None:
         dates = pd.bdate_range(end=date.today(), periods=260)
@@ -1348,7 +1554,7 @@ class InvestmentPlanServiceTestCase(unittest.TestCase):
         )
         plan = self._create_active(service, required_cash_pct=25)
 
-        def quote_after_edit(_symbol):
+        def quote_after_edit(_symbol, **_kwargs):
             service.update_plan(plan["id"], fields={"required_cash_pct": 35})
             return {
                 "stock_code": "600519",
@@ -1466,6 +1672,18 @@ class InvestmentPlanServiceTestCase(unittest.TestCase):
 
         self.assertEqual(result["evaluated"], 1)
         self.assertEqual(result["results"][0]["plan"]["id"], daily_plan["id"])
+
+    def test_batch_evaluation_accepts_minute_frequency(self) -> None:
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=95),
+            portfolio_service=self.portfolio,
+        )
+        minute_plan = self._create_active(service, check_frequency="minute")
+
+        result = service.evaluate_active_plans(check_frequencies={"minute"})
+
+        self.assertEqual(result["evaluated"], 1)
+        self.assertEqual(result["results"][0]["plan"]["id"], minute_plan["id"])
 
     def test_frequency_batch_notifies_only_plans_evaluated_in_that_batch(self) -> None:
         notifier = _NotifierStub()

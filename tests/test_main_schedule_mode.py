@@ -8,7 +8,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from tests.litellm_stub import ensure_litellm_stub
 
@@ -117,6 +117,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main.get_config", return_value=config), \
              patch("main._reload_runtime_config", return_value=config), \
              patch("main._build_schedule_time_provider", return_value=lambda: "18:00"), \
+             patch("main._get_intraday_plan_evaluation_markets", return_value={"cn"}) as intraday_markets, \
              patch("main._get_plan_evaluation_markets", return_value={"cn"}), \
              patch("main._evaluate_investment_plans") as evaluate_plans, \
              patch("main._warm_etf_history_for_daily_run") as warm_etf_history, \
@@ -126,22 +127,37 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("src.scheduler.run_with_schedule", side_effect=fake_run_with_schedule):
             exit_code = main.main()
             scheduled_call["background_tasks"][0]["task"]()
+            intraday_markets.return_value = set()
+            scheduled_call["background_tasks"][0]["task"]()
+            scheduled_call["background_tasks"][1]["task"]()
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(scheduled_call["schedule_time"], "18:00")
         self.assertTrue(scheduled_call["run_immediately"])
         self.assertEqual(scheduled_call["resolved_schedule_time"], "18:00")
-        self.assertEqual(len(scheduled_call["background_tasks"]), 1)
-        hourly_task = scheduled_call["background_tasks"][0]
+        self.assertEqual(len(scheduled_call["background_tasks"]), 2)
+        minute_task = scheduled_call["background_tasks"][0]
+        self.assertEqual(minute_task["name"], "minute_investment_plans")
+        self.assertEqual(minute_task["interval_seconds"], 60)
+        self.assertTrue(minute_task["run_immediately"])
+        hourly_task = scheduled_call["background_tasks"][1]
         self.assertEqual(hourly_task["name"], "hourly_investment_plans")
         self.assertEqual(hourly_task["interval_seconds"], 3600)
         self.assertTrue(hourly_task["run_immediately"])
-        evaluate_plans.assert_called_once_with(
-            notifier=None,
-            send_notification=True,
-            markets={"cn"},
-            check_frequencies={"hourly"},
-        )
+        self.assertEqual(evaluate_plans.call_args_list, [
+            call(
+                notifier=None,
+                send_notification=True,
+                markets={"cn"},
+                check_frequencies={"minute"},
+            ),
+            call(
+                notifier=None,
+                send_notification=True,
+                markets={"cn"},
+                check_frequencies={"hourly"},
+            ),
+        ])
         run_full_analysis.assert_called_once_with(config, args, None)
         warm_etf_history.assert_called_once_with()
         warning_log.assert_any_call(

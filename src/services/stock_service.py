@@ -37,6 +37,7 @@ class StockService:
         stock_code: str,
         *,
         enrich: bool = True,
+        require_observed_at: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """
         获取股票实时行情
@@ -44,6 +45,7 @@ class StockService:
         Args:
             stock_code: 股票代码
             enrich: 是否继续补充估值和活跃度字段。仅依赖价格的调用方可关闭。
+            require_observed_at: 是否要求供应商返回可信报价时间。
             
         Returns:
             实时行情数据字典
@@ -53,7 +55,10 @@ class StockService:
             from data_provider.base import DataFetcherManager
             
             manager = DataFetcherManager()
-            quote = manager.get_realtime_quote(stock_code, enrich=enrich)
+            quote_kwargs = {"enrich": enrich}
+            if require_observed_at:
+                quote_kwargs["require_observed_at"] = True
+            quote = manager.get_realtime_quote(stock_code, **quote_kwargs)
             
             if quote is None:
                 logger.warning(f"获取 {stock_code} 实时行情失败")

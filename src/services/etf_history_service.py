@@ -64,6 +64,7 @@ class EtfHistoryService:
         *,
         force_refresh: bool = False,
         allow_network: bool = True,
+        latest_price: Optional[float] = None,
     ) -> EtfHistoryMetrics:
         kwargs: dict[str, Any] = {"days": ETF_HISTORY_DAYS}
         if force_refresh:
@@ -71,10 +72,16 @@ class EtfHistoryService:
         if not allow_network:
             kwargs["allow_network"] = False
         payload = self.stock_service.get_history_data(symbol, **kwargs)
-        return self.calculate_metrics(symbol, payload)
+        return self.calculate_metrics(symbol, payload, latest_price=latest_price)
 
     @classmethod
-    def calculate_metrics(cls, symbol: str, payload: dict[str, Any]) -> EtfHistoryMetrics:
+    def calculate_metrics(
+        cls,
+        symbol: str,
+        payload: dict[str, Any],
+        *,
+        latest_price: Optional[float] = None,
+    ) -> EtfHistoryMetrics:
         rows = list(payload.get("data") or [])
         closes = [
             value
@@ -82,7 +89,9 @@ class EtfHistoryService:
             if (value := cls._positive(row.get("close"))) is not None
         ]
         recent_rows = rows[-250:]
-        latest = cls._positive(recent_rows[-1].get("close")) if recent_rows else None
+        latest = cls._positive(latest_price)
+        if latest is None:
+            latest = cls._positive(recent_rows[-1].get("close")) if recent_rows else None
         highs = [
             value
             for row in recent_rows

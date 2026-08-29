@@ -49,6 +49,16 @@ class _FakeCalendar:
         return pd.Timestamp(local_close).tz_convert("UTC")
 
 
+class _FakeMinuteCalendar:
+    def __init__(self, *, is_open: bool):
+        self.is_open = is_open
+        self.minutes = []
+
+    def is_open_on_minute(self, minute: datetime) -> bool:
+        self.minutes.append(minute)
+        return self.is_open
+
+
 class EffectiveTradingDateTestCase(unittest.TestCase):
     def test_market_inference_handles_index_aliases_and_suffixes(self):
         expected = {
@@ -178,6 +188,69 @@ class EffectiveTradingDateTestCase(unittest.TestCase):
             result = trading_calendar.get_effective_trading_date("hk", current_time=current_time)
 
         self.assertEqual(result, date(2026, 3, 28))
+
+
+class LiveMarketSessionTestCase(unittest.TestCase):
+    def test_exchange_calendar_controls_live_session(self):
+        fake_calendar = _FakeMinuteCalendar(is_open=True)
+        current_time = datetime(2026, 8, 28, 2, 15, tzinfo=timezone.utc)
+
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", True), patch.object(
+            trading_calendar,
+            "xcals",
+            SimpleNamespace(get_calendar=lambda _ex: fake_calendar),
+            create=True,
+        ):
+            result = trading_calendar.is_market_trading_now(
+                "cn",
+                current_time=current_time,
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(fake_calendar.minutes[0].hour, 10)
+        self.assertEqual(fake_calendar.minutes[0].minute, 15)
+
+    def test_missing_calendar_fails_closed(self):
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", False):
+            self.assertFalse(trading_calendar.is_market_trading_now(
+                "cn",
+                current_time=datetime(2026, 8, 28, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            ))
+
+    def test_calendar_error_fails_closed_during_weekday_session(self):
+        current_time = datetime(2027, 1, 1, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", True), patch.object(
+            trading_calendar,
+            "xcals",
+            SimpleNamespace(
+                get_calendar=lambda _ex: (_ for _ in ()).throw(RuntimeError("out of range"))
+            ),
+            create=True,
+        ):
+            result = trading_calendar.is_market_trading_now(
+                "cn",
+                current_time=current_time,
+            )
+
+        self.assertFalse(result)
+
+    def test_open_market_set_uses_one_shared_instant(self):
+        current_time = datetime(2026, 8, 28, 2, 15, tzinfo=timezone.utc)
+
+        with patch.object(
+            trading_calendar,
+            "is_market_trading_now",
+            side_effect=lambda market, current_time=None: market in {"cn", "hk"},
+        ) as is_open:
+            result = trading_calendar.get_markets_open_now(current_time=current_time)
+
+        self.assertEqual(result, {"cn", "hk"})
+        self.assertEqual(is_open.call_count, 3)
+        self.assertTrue(all(
+            item.kwargs["current_time"] is current_time
+            for item in is_open.call_args_list
+        ))
 
 
 class ComputeEffectiveRegionTestCase(unittest.TestCase):

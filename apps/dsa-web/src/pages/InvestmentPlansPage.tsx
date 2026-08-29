@@ -102,6 +102,7 @@ const OPERATOR_OPTIONS = [
 ];
 
 const CHECK_FREQUENCY_OPTIONS: Array<{ value: InvestmentPlanCheckFrequency; label: string }> = [
+  { value: 'minute', label: '盘中高频（每分钟）' },
   { value: 'daily', label: '每日定时任务' },
   { value: 'hourly', label: '每小时（schedule 模式）' },
   { value: 'manual', label: '仅手工检查' },
@@ -1495,7 +1496,19 @@ const PlanEditorDrawer: React.FC<{
         <div className="grid gap-4 sm:grid-cols-2">
           <Input label="标的代码" value={form.symbol} onChange={(event) => onFormChange({ symbol: event.target.value })} disabled={Boolean(editingPlan)} />
           <Input label="标的名称" value={form.name} onChange={(event) => onFormChange({ name: event.target.value })} />
-          <Select label="市场" value={form.market} onChange={(value) => onFormChange({ market: value as PlanForm['market'] })} options={MARKET_OPTIONS} disabled={Boolean(editingPlan)} />
+          <Select
+            label="市场"
+            value={form.market}
+            onChange={(value) => {
+              const market = value as PlanForm['market'];
+              onFormChange({
+                market,
+                ...(market === 'us' && form.checkFrequency === 'minute' ? { checkFrequency: 'daily' } : {}),
+              });
+            }}
+            options={MARKET_OPTIONS}
+            disabled={Boolean(editingPlan)}
+          />
           <Select
             label="策略类型"
             value={form.strategyType}
@@ -1535,12 +1548,19 @@ const PlanEditorDrawer: React.FC<{
           <h3 className="text-sm font-semibold text-foreground">检查与通知</h3>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
-          <Select
-            label="自动检查频率"
-            value={form.checkFrequency}
-            onChange={(value) => onFormChange({ checkFrequency: value as InvestmentPlanCheckFrequency })}
-            options={CHECK_FREQUENCY_OPTIONS}
-          />
+          <div>
+            <Select
+              label="自动检查频率"
+              value={form.checkFrequency}
+              onChange={(value) => onFormChange({ checkFrequency: value as InvestmentPlanCheckFrequency })}
+              options={form.market === 'us'
+                ? CHECK_FREQUENCY_OPTIONS.filter((item) => item.value !== 'minute')
+                : CHECK_FREQUENCY_OPTIONS}
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              自动检查需持续运行 schedule 服务；盘中高频仅支持 A 股/港股，并只在对应市场交易时段执行。
+            </p>
+          </div>
           <div>
             <Select
               label="通知渠道"

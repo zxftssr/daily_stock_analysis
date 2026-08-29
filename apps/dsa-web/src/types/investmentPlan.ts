@@ -4,7 +4,7 @@ export type InvestmentPlanStepAction = 'buy' | 'add' | 'reduce' | 'exit' | 'revi
 export type InvestmentPlanStepMetric = 'price' | 'benchmark_drawdown_250d_pct';
 export type InvestmentPlanStepOperator = 'lte' | 'gte' | 'between';
 export type InvestmentPlanStepStatus = 'pending' | 'triggered' | 'completed' | 'skipped';
-export type InvestmentPlanCheckFrequency = 'daily' | 'hourly' | 'manual';
+export type InvestmentPlanCheckFrequency = 'minute' | 'daily' | 'hourly' | 'manual';
 export type InvestmentPlanNotificationChannel =
   | 'wechat' | 'feishu' | 'telegram' | 'email' | 'pushover' | 'ntfy' | 'gotify'
   | 'pushplus' | 'serverchan3' | 'custom' | 'discord' | 'slack' | 'astrbot';

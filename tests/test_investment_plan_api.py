@@ -131,6 +131,28 @@ class InvestmentPlanApiTestCase(unittest.TestCase):
         self.assertEqual(paused.status_code, 200)
         self.assertEqual(paused.json()["status"], "paused")
 
+    def test_accepts_minute_check_frequency(self) -> None:
+        payload = self._payload()
+        payload["check_frequency"] = "minute"
+
+        created = self.client.post("/api/v1/investment-plans", json=payload)
+
+        self.assertEqual(created.status_code, 200, created.text)
+        self.assertEqual(created.json()["check_frequency"], "minute")
+
+    def test_rejects_minute_check_frequency_for_us_market(self) -> None:
+        payload = self._payload()
+        payload.update({
+            "symbol": "AAPL",
+            "market": "us",
+            "check_frequency": "minute",
+        })
+
+        created = self.client.post("/api/v1/investment-plans", json=payload)
+
+        self.assertEqual(created.status_code, 400, created.text)
+        self.assertIn("supports cn and hk", created.json()["message"])
+
     def test_duplicate_and_invalid_plan_errors(self) -> None:
         first = self.client.post("/api/v1/investment-plans", json=self._payload())
         self.assertEqual(first.status_code, 200)

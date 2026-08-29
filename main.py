@@ -269,6 +269,13 @@ def _get_plan_evaluation_markets(config: Config, args: argparse.Namespace) -> Op
     return set(get_open_markets_today())
 
 
+def _get_intraday_plan_evaluation_markets() -> set[str]:
+    """Return only markets that are inside a live trading session right now."""
+    from src.core.trading_calendar import get_markets_open_now
+
+    return set(get_markets_open_now())
+
+
 def parse_arguments() -> argparse.Namespace:
     """解析命令行参数"""
     parser = argparse.ArgumentParser(
@@ -1013,6 +1020,32 @@ def main() -> int:
                 run_full_analysis(runtime_config, args, scheduled_stock_codes)
 
             background_tasks = []
+
+            def minute_investment_plan_task():
+                markets = _get_intraday_plan_evaluation_markets()
+                if not markets:
+                    logger.debug("盘中高频策略计划检查跳过：当前没有开市市场")
+                    return
+                stats = _evaluate_investment_plans(
+                    notifier=None,
+                    send_notification=not args.no_notify,
+                    markets=markets,
+                    check_frequencies={"minute"},
+                )
+                logger.info(
+                    "盘中高频策略计划检查完成: evaluated=%s triggered=%s errors=%s notification_sent=%s",
+                    stats.get("evaluated", 0),
+                    stats.get("triggered", 0),
+                    len(stats.get("errors") or []),
+                    (stats.get("notification") or {}).get("sent", False),
+                )
+
+            background_tasks.append({
+                "task": minute_investment_plan_task,
+                "interval_seconds": 60,
+                "run_immediately": True,
+                "name": "minute_investment_plans",
+            })
 
             def hourly_investment_plan_task():
                 runtime_config = _reload_runtime_config()

@@ -13,7 +13,7 @@
 """
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Optional, Set
 from zoneinfo import ZoneInfo
 
@@ -39,7 +39,6 @@ MARKET_TIMEZONE = {
     "hk": "Asia/Hong_Kong",
     "us": "America/New_York",
 }
-
 
 def get_market_for_stock(code: str) -> Optional[str]:
     """
@@ -120,6 +119,45 @@ def get_market_now(
     if current_time.tzinfo is None:
         return current_time.replace(tzinfo=tz)
     return current_time.astimezone(tz)
+
+
+def is_market_trading_now(
+    market: str,
+    current_time: Optional[datetime] = None,
+) -> bool:
+    """Return whether the market is inside a live regular trading session now.
+
+    The exchange calendar handles holidays and midday breaks. High-frequency
+    checks fail closed when the calendar cannot confirm an open session.
+    """
+    market_now = get_market_now(market, current_time=current_time)
+    if not _XCALS_AVAILABLE:
+        return False
+
+    ex = MARKET_EXCHANGE.get(market)
+    if not ex:
+        return False
+    try:
+        cal = xcals.get_calendar(ex)
+        minute = market_now.replace(second=0, microsecond=0)
+        return bool(cal.is_open_on_minute(minute))
+    except Exception as exc:
+        logger.warning(
+            "trading_calendar.is_market_trading_now fail-closed for %s: %s",
+            market,
+            exc,
+        )
+        return False
+
+
+def get_markets_open_now(current_time: Optional[datetime] = None) -> Set[str]:
+    """Return markets currently inside their regular trading sessions."""
+    instant = current_time or datetime.now(timezone.utc)
+    return {
+        market
+        for market in MARKET_TIMEZONE
+        if is_market_trading_now(market, current_time=instant)
+    }
 
 
 def get_effective_trading_date(

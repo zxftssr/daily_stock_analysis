@@ -16,7 +16,7 @@ StepAction = Literal["buy", "add", "reduce", "exit", "review"]
 StepMetric = Literal["price", "benchmark_drawdown_250d_pct"]
 StepOperator = Literal["lte", "gte", "between"]
 StepStatus = Literal["pending", "triggered", "completed", "skipped"]
-CheckFrequency = Literal["daily", "hourly", "manual"]
+CheckFrequency = Literal["minute", "daily", "hourly", "manual"]
 NotificationChannel = Literal[
     "wechat", "feishu", "telegram", "email", "pushover", "ntfy", "gotify",
     "pushplus", "serverchan3", "custom", "discord", "slack", "astrbot",

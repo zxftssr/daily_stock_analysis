@@ -1449,6 +1449,7 @@ class DataFetcherManager:
         *,
         log_final_failure: bool = True,
         enrich: bool = True,
+        require_observed_at: bool = False,
     ):
         """
         获取实时行情数据（自动故障切换）
@@ -1466,6 +1467,8 @@ class DataFetcherManager:
             enrich: Whether to supplement optional valuation and activity fields
                 after the first source returns a valid price. Price-only callers
                 should disable this to avoid full-market snapshot requests.
+            require_observed_at: Skip otherwise valid quotes that do not carry a
+                provider-supplied observation timestamp.
             
         Returns:
             UnifiedRealtimeQuote 对象，所有数据源都失败则返回 None
@@ -1537,6 +1540,7 @@ class DataFetcherManager:
                 route,
                 accept_sparse_public=is_us and not is_us_index,
                 enrich=enrich,
+                require_observed_at=require_observed_at,
             )
             if primary_quote is not None:
                 return primary_quote
@@ -1614,6 +1618,13 @@ class DataFetcherManager:
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', raw_stock_code or stock_code)
                 
                 if quote is not None and quote.has_basic_data():
+                    if require_observed_at and not getattr(quote, "observed_at", None):
+                        logger.debug(
+                            "[实时行情] %s 来源 %s 缺少报价时间，继续尝试下一个数据源",
+                            stock_code,
+                            source,
+                        )
+                        continue
                     if primary_quote is None:
                         # First successful source becomes primary
                         primary_quote = quote
@@ -1748,6 +1759,7 @@ class DataFetcherManager:
         *,
         accept_sparse_public: bool = False,
         enrich: bool = True,
+        require_observed_at: bool = False,
     ):
         """Try a market-specific route and enrich the first successful quote."""
         primary_quote = None
@@ -1755,6 +1767,13 @@ class DataFetcherManager:
         for fetcher_name, kwargs in route:
             quote = self._try_fetcher_quote(stock_code, fetcher_name, **kwargs)
             if quote is None:
+                continue
+            if require_observed_at and not getattr(quote, "observed_at", None):
+                logger.debug(
+                    "[实时行情] %s 来源 %s 缺少报价时间，继续尝试下一个数据源",
+                    stock_code,
+                    fetcher_name,
+                )
                 continue
             if primary_quote is None:
                 primary_quote = quote

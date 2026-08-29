@@ -7,7 +7,7 @@ import json
 import logging
 import math
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from data_provider import is_us_index_code, is_us_stock_code
@@ -40,7 +40,10 @@ STEP_ACTIONS = {"buy", "add", "reduce", "exit", "review"}
 STEP_METRICS = {"price", "benchmark_drawdown_250d_pct"}
 STEP_OPERATORS = {"lte", "gte", "between"}
 STEP_STATUSES = {"pending", "triggered", "completed", "skipped"}
-CHECK_FREQUENCIES = {"daily", "hourly", "manual"}
+CHECK_FREQUENCIES = {"minute", "daily", "hourly", "manual"}
+MINUTE_CHECK_MARKETS = {"cn", "hk"}
+MINUTE_QUOTE_MAX_AGE = timedelta(minutes=5)
+MINUTE_QUOTE_FUTURE_TOLERANCE = timedelta(minutes=1)
 
 STRATEGY_LABELS = {
     "index_crash": "指数大跌",
@@ -120,6 +123,7 @@ class InvestmentPlanService:
         normalized_frequency = self._normalize_choice(
             check_frequency, CHECK_FREQUENCIES, "check_frequency"
         )
+        self._validate_check_frequency_market(normalized_market, normalized_frequency)
         self._validate_account(account_id)
         fields = {
             "account_id": account_id,
@@ -270,6 +274,10 @@ class InvestmentPlanService:
             )
         effective_plan = {**current, **normalized}
         effective_steps = normalized_steps if normalized_steps is not None else current["steps"]
+        self._validate_check_frequency_market(
+            effective_plan["market"],
+            effective_plan["check_frequency"],
+        )
         self._validate_cross_field_invariants(effective_plan, effective_steps)
         updated = self.repo.update_plan(
             plan_id,
@@ -450,8 +458,16 @@ class InvestmentPlanService:
         metric_values: Dict[str, Optional[float]] = {}
         errors: List[str] = []
 
-        quote = self._get_quote(plan["symbol"])
-        current_price = self._get_validated_price(plan["symbol"], quote or {})
+        use_realtime_price = plan.get("check_frequency") == "minute"
+        quote = self._get_quote(
+            plan["symbol"],
+            require_observed_at=use_realtime_price,
+        )
+        current_price = self._get_validated_price(
+            plan["symbol"],
+            quote or {},
+            allow_history_fallback=not use_realtime_price,
+        )
         metric_values["price"] = current_price
         if current_price is None and any(step["metric"] == "price" for step in pending_steps):
             errors.append("最新价格不可用")
@@ -462,7 +478,10 @@ class InvestmentPlanService:
                 errors.append("基准回撤档位缺少对标指数")
                 metric_values["benchmark_drawdown_250d_pct"] = None
             else:
-                drawdown = self._get_benchmark_drawdown(benchmark)
+                drawdown = self._get_benchmark_drawdown(
+                    benchmark,
+                    use_realtime_price=use_realtime_price,
+                )
                 metric_values["benchmark_drawdown_250d_pct"] = drawdown
                 if drawdown is None:
                     errors.append("基准250日回撤不可用")
@@ -670,17 +689,31 @@ class InvestmentPlanService:
     # ------------------------------------------------------------------
     # Evaluation helpers
     # ------------------------------------------------------------------
-    def _get_quote(self, symbol: str) -> Optional[Dict[str, Any]]:
-        if symbol not in self._quote_cache:
-            self._quote_cache[symbol] = self.stock_service.get_realtime_quote(
+    def _get_quote(
+        self,
+        symbol: str,
+        *,
+        require_observed_at: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        cache_key = f"{symbol}:{int(require_observed_at)}"
+        if cache_key not in self._quote_cache:
+            self._quote_cache[cache_key] = self.stock_service.get_realtime_quote(
                 symbol,
                 enrich=False,
+                require_observed_at=require_observed_at,
             )
-        return self._quote_cache[symbol]
+        return self._quote_cache[cache_key]
 
-    def _get_validated_price(self, symbol: str, quote: Dict[str, Any]) -> Optional[float]:
-        if symbol in self._validated_price_cache:
-            return self._validated_price_cache[symbol]
+    def _get_validated_price(
+        self,
+        symbol: str,
+        quote: Dict[str, Any],
+        *,
+        allow_history_fallback: bool = True,
+    ) -> Optional[float]:
+        cache_key = f"{symbol}:{int(allow_history_fallback)}"
+        if cache_key in self._validated_price_cache:
+            return self._validated_price_cache[cache_key]
         raw_price = self._finite_positive(quote.get("current_price"))
         try:
             from data_provider.base import normalize_stock_code
@@ -704,16 +737,20 @@ class InvestmentPlanService:
                 observed_date is not None
                 and observed_date >= expected_date
                 and raw_price is not None
+                and (
+                    allow_history_fallback
+                    or self._is_minute_quote_fresh(symbol, quote)
+                )
             ):
                 validated_price = raw_price
-            else:
+            elif allow_history_fallback:
                 history = self.stock_service.get_history_data(
                     symbol,
                     period="daily",
                     days=30,
                 )
                 if history.get("stale") is True or history.get("partial_cache") is True:
-                    self._validated_price_cache[symbol] = None
+                    self._validated_price_cache[cache_key] = None
                     return None
                 observed_date = date.fromisoformat(
                     str(history.get("as_of_date") or "")[:10]
@@ -722,22 +759,77 @@ class InvestmentPlanService:
                 validated_price = self._finite_positive(
                     rows[-1].get("close") if rows else None
                 )
-            if observed_date < expected_date:
+            else:
+                validated_price = None
+            if observed_date is None or observed_date < expected_date:
                 validated_price = None
         except Exception as exc:
             logger.warning("校验策略计划价格时效失败 symbol=%s: %s", symbol, exc)
             validated_price = None
-        self._validated_price_cache[symbol] = validated_price
+        self._validated_price_cache[cache_key] = validated_price
         return validated_price
 
-    def _get_benchmark_drawdown(self, symbol: str) -> Optional[float]:
-        if symbol in self._drawdown_cache:
-            return self._drawdown_cache[symbol]
-        metrics = self.etf_history_service.get_metrics(symbol)
-        self._drawdown_cache[symbol] = (
+    @staticmethod
+    def _utc_now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    def _is_minute_quote_fresh(self, symbol: str, quote: Dict[str, Any]) -> bool:
+        """Require a recent, timezone-aware quote from a confirmed live session."""
+        observed_value = quote.get("observed_at")
+        try:
+            observed_at = datetime.fromisoformat(str(observed_value or "").replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            return False
+
+        checked_at = self._utc_now()
+        age = checked_at - observed_at.astimezone(timezone.utc)
+        if age < -MINUTE_QUOTE_FUTURE_TOLERANCE or age > MINUTE_QUOTE_MAX_AGE:
+            return False
+
+        try:
+            from data_provider.base import normalize_stock_code
+            from src.core.trading_calendar import get_market_for_stock, is_market_trading_now
+
+            market = get_market_for_stock(normalize_stock_code(symbol))
+            return bool(
+                market
+                and is_market_trading_now(market, current_time=observed_at)
+                and is_market_trading_now(market, current_time=checked_at)
+            )
+        except Exception as exc:
+            logger.warning("校验分钟策略行情时间失败 symbol=%s: %s", symbol, exc)
+            return False
+
+    def _get_benchmark_drawdown(
+        self,
+        symbol: str,
+        *,
+        use_realtime_price: bool = False,
+    ) -> Optional[float]:
+        cache_key = f"{symbol}:{int(use_realtime_price)}"
+        if cache_key in self._drawdown_cache:
+            return self._drawdown_cache[cache_key]
+        latest_price = None
+        if use_realtime_price:
+            quote = self._get_quote(symbol, require_observed_at=True)
+            latest_price = self._get_validated_price(
+                symbol,
+                quote or {},
+                allow_history_fallback=False,
+            )
+            if latest_price is None:
+                self._drawdown_cache[cache_key] = None
+                return None
+        metrics = self.etf_history_service.get_metrics(
+            symbol,
+            latest_price=latest_price,
+        )
+        self._drawdown_cache[cache_key] = (
             metrics.drawdown_250d_pct if metrics.reliable else None
         )
-        return self._drawdown_cache[symbol]
+        return self._drawdown_cache[cache_key]
 
     def _load_constraints(self, plan: Dict[str, Any]) -> Dict[str, Any]:
         account_id = plan.get("account_id")
@@ -907,6 +999,11 @@ class InvestmentPlanService:
             return
         if self.portfolio_service.repo.get_account(int(account_id)) is None:
             raise ValueError("account_id does not reference an active portfolio account")
+
+    @staticmethod
+    def _validate_check_frequency_market(market: str, check_frequency: str) -> None:
+        if check_frequency == "minute" and market not in MINUTE_CHECK_MARKETS:
+            raise ValueError("minute check frequency currently supports cn and hk markets only")
 
     @classmethod
     def _normalize_steps(

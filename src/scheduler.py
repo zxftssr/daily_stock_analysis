@@ -86,6 +86,7 @@ class Scheduler:
         self.shutdown_handler = GracefulShutdown()
         self._task_callback: Optional[Callable] = None
         self._daily_job: Optional[Any] = None
+        self._daily_thread: Optional[threading.Thread] = None
         self._background_tasks: List[Dict[str, Any]] = []
         self._running = False
 
@@ -103,7 +104,7 @@ class Scheduler:
 
         if run_immediately:
             logger.info("立即执行一次任务...")
-            self._safe_run_task()
+            self._start_daily_task()
 
     @staticmethod
     def _is_valid_schedule_time(schedule_time: str) -> bool:
@@ -140,7 +141,7 @@ class Scheduler:
 
         previous_time = self.schedule_time
         self._cancel_daily_job()
-        self._daily_job = self.schedule.every().day.at(candidate).do(self._safe_run_task)
+        self._daily_job = self.schedule.every().day.at(candidate).do(self._start_daily_task)
         self.schedule_time = candidate
 
         if previous_time == candidate:
@@ -186,6 +187,28 @@ class Scheduler:
 
         except Exception as e:
             logger.exception(f"定时任务执行失败: {e}")
+
+    def _start_daily_task(self) -> bool:
+        """Run the daily callback in a non-reentrant worker thread."""
+        worker = self._daily_thread
+        if worker is not None and worker.is_alive():
+            logger.warning("每日定时任务仍在执行，本次触发已跳过")
+            return False
+
+        def _runner() -> None:
+            try:
+                self._safe_run_task()
+            finally:
+                self._daily_thread = None
+
+        worker = threading.Thread(
+            target=_runner,
+            daemon=True,
+            name="scheduler-daily",
+        )
+        self._daily_thread = worker
+        worker.start()
+        return True
 
     def add_background_task(
         self,
@@ -291,6 +314,10 @@ class Scheduler:
                 logger.info(f"调度器运行中... 下次执行: {self._get_next_run_time()}")
 
         logger.info("调度器已停止")
+        daily_worker = self._daily_thread
+        if daily_worker is not None and daily_worker.is_alive():
+            logger.info("等待正在执行的每日定时任务完成...")
+            daily_worker.join()
 
     def _get_next_run_time(self) -> str:
         """获取下次执行时间"""
