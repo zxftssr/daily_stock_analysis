@@ -93,6 +93,13 @@ class MainScheduleModeTestCase(unittest.TestCase):
         defaults.update(overrides)
         return _DummyConfig(**defaults)
 
+    def test_intraday_plan_markets_exclude_unsupported_us_minute_checks(self) -> None:
+        with patch(
+            "src.core.trading_calendar.get_markets_open_now",
+            return_value={"cn", "hk", "us"},
+        ):
+            self.assertEqual(main._get_intraday_plan_evaluation_markets(), {"cn", "hk"})
+
     def test_schedule_mode_ignores_cli_stock_snapshot(self) -> None:
         args = self._make_args(schedule=True, stocks="600519,000001")
         config = self._make_config(schedule_enabled=False)

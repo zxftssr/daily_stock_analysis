@@ -775,7 +775,7 @@ describe('InvestmentPlansPage', () => {
     });
   });
 
-  it('keeps minute checks available for US plans', async () => {
+  it('resets and hides minute checks for US plans', async () => {
     render(
       <MemoryRouter>
         <InvestmentPlansPage />
@@ -787,9 +787,9 @@ describe('InvestmentPlansPage', () => {
     fireEvent.change(screen.getByLabelText('自动检查频率'), { target: { value: 'minute' } });
     fireEvent.change(screen.getByLabelText('市场'), { target: { value: 'us' } });
 
-    expect(screen.getByLabelText('自动检查频率')).toHaveValue('minute');
-    expect(screen.getByRole('option', { name: '盘中高频（每分钟）' })).toBeInTheDocument();
-    expect(screen.getByText(/支持 A 股、港股和美股/)).toBeInTheDocument();
+    expect(screen.getByLabelText('自动检查频率')).toHaveValue('daily');
+    expect(screen.queryByRole('option', { name: '盘中高频（每分钟）' })).not.toBeInTheDocument();
+    expect(screen.getByText(/美股需配置可靠的实时行情源后再开放/)).toBeInTheDocument();
   });
 
   it('checks every active plan without sending a user notification', async () => {

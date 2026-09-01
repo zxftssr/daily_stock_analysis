@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 真实交易时段验证发现 Yahoo 免费分钟行情会被限流，暂时关闭美股盘中每分钟计划入口，并将 SQLite 中已存在的美股分钟计划幂等迁移为每日检查；A 股与港股保持可用
+- [修复] 无后缀的沪深 300 指数代码 `000300` 按沪市解析，避免实时行情错误请求深市代码
+- [改进] 配置 Tushare Token 不再自动提升实时行情优先级，只有显式设置 `REALTIME_SOURCE_PRIORITY` 时才参与实时轮询
+- [测试] 股票热度缓存用例使用当前 UTC 时间，避免固定日期超过最大陈旧期后阻断 CI
 - [文档] 增加 Git 忽略的本机部署目标记录约定，要求部署前核对服务器、SSH 用户、密钥与远端目录
 - [修复] 调度器状态读写增加跨进程互斥并校验当前 `instance_id`，避免旧 schedule 进程延迟退出时覆盖新进程的在线状态
 - [测试] 同步 YFinance `BRK.B -> BRK-B` deterministic 脚本预期，恢复 `ci_gate.sh` 阻断检查

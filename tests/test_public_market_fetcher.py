@@ -102,6 +102,13 @@ def test_code_mapping_preserves_explicit_mainland_exchange_hint():
     assert sz.cache_identity == "cn:sz:000001"
 
 
+def test_code_mapping_uses_shanghai_for_unqualified_csi_300_index():
+    csi_300 = resolve_public_market_code("000300")
+
+    assert csi_300.tencent_symbol == "sh000300"
+    assert csi_300.eastmoney_secids == ("1.000300",)
+
+
 def test_tencent_quote_parser_normalizes_mainland_units():
     code = resolve_public_market_code("600519")
     fields = [""] * 50

@@ -766,23 +766,110 @@ class InvestmentPlanServiceTestCase(unittest.TestCase):
         self.assertEqual(result["plan"]["last_evaluation_status"], "data_missing")
         self.assertEqual(result["plan"]["steps"][0]["status"], "pending")
 
-    def test_minute_frequency_accepts_us_market(self) -> None:
+    def test_minute_frequency_rejects_us_market(self) -> None:
         service = InvestmentPlanService(
             stock_service=_StockServiceStub(price=95),
             portfolio_service=self.portfolio,
         )
 
-        us_plan = service.create_plan(
+        with self.assertRaisesRegex(ValueError, "currently supports cn and hk"):
+            service.create_plan(
+                symbol="AAPL",
+                market="us",
+                strategy_type="value",
+                status="active",
+                thesis="现金流稳定",
+                invalidation_note="盈利持续恶化",
+                check_frequency="minute",
+                steps=[self._step()],
+            )
+
+    def test_legacy_us_minute_plan_cannot_be_evaluated_or_reactivated(self) -> None:
+        stock_service = _StockServiceStub(price=95)
+        service = InvestmentPlanService(
+            stock_service=stock_service,
+            portfolio_service=self.portfolio,
+        )
+        plan = service.create_plan(
             symbol="AAPL",
             market="us",
             strategy_type="value",
             status="active",
             thesis="现金流稳定",
             invalidation_note="盈利持续恶化",
-            check_frequency="minute",
+            check_frequency="daily",
             steps=[self._step()],
         )
-        self.assertEqual(us_plan["check_frequency"], "minute")
+        service.repo.update_plan(
+            plan["id"],
+            fields={"check_frequency": "minute"},
+            expected_updated_at=plan["updated_at"],
+        )
+
+        with patch.object(
+            stock_service,
+            "get_realtime_quote",
+            side_effect=AssertionError("unsupported plan must not request a quote"),
+        ):
+            with self.assertRaisesRegex(ValueError, "currently supports cn and hk"):
+                service.evaluate_plan(plan["id"])
+            batch = service.evaluate_active_plans(check_frequencies={"minute"})
+
+        self.assertEqual(batch["evaluated"], 0)
+        self.assertEqual(len(batch["errors"]), 1)
+        self.assertIn("currently supports cn and hk", batch["errors"][0]["message"])
+
+        service.set_plan_status(plan["id"], "paused")
+        with self.assertRaisesRegex(ValueError, "currently supports cn and hk"):
+            service.set_plan_status(plan["id"], "active")
+
+    def test_sqlite_upgrade_moves_legacy_us_minute_plan_to_daily_schedule(self) -> None:
+        service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=95),
+            portfolio_service=self.portfolio,
+        )
+        plan = service.create_plan(
+            symbol="AAPL",
+            market="us",
+            strategy_type="value",
+            status="active",
+            thesis="现金流稳定",
+            invalidation_note="盈利持续恶化",
+            check_frequency="daily",
+            steps=[self._step()],
+        )
+        service.repo.update_plan(
+            plan["id"],
+            fields={"check_frequency": "minute"},
+            expected_updated_at=plan["updated_at"],
+        )
+
+        DatabaseManager.reset_instance()
+        self.db = DatabaseManager.get_instance()
+        migrated_service = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=95),
+            portfolio_service=PortfolioService(),
+        )
+
+        migrated = migrated_service.get_plan(plan["id"])
+        self.assertEqual(migrated["status"], "active")
+        self.assertEqual(migrated["check_frequency"], "daily")
+        self.assertEqual(len(migrated["steps"]), 1)
+        self.assertEqual(migrated["steps"][0]["threshold"], 100)
+        daily = migrated_service.evaluate_active_plans(check_frequencies={"daily"})
+        minute = migrated_service.evaluate_active_plans(check_frequencies={"minute"})
+        self.assertEqual(daily["evaluated"], 1)
+        self.assertEqual(minute["evaluated"], 0)
+
+        DatabaseManager.reset_instance()
+        self.db = DatabaseManager.get_instance()
+        reloaded = InvestmentPlanService(
+            stock_service=_StockServiceStub(price=95),
+            portfolio_service=PortfolioService(),
+        ).get_plan(plan["id"])
+        self.assertEqual(reloaded["status"], "active")
+        self.assertEqual(reloaded["check_frequency"], "daily")
+        self.assertEqual(len(reloaded["steps"]), 1)
 
     def test_default_index_window_reaches_250_bars_through_real_history_loader(self) -> None:
         dates = pd.bdate_range(end=date.today(), periods=260)

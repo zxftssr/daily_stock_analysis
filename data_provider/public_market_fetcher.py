@@ -42,6 +42,7 @@ from .us_index_mapping import is_us_index_code, is_us_stock_code
 logger = logging.getLogger(__name__)
 
 SUPPORTED_PUBLIC_SOURCES = ("tencent", "sina", "eastmoney")
+_KNOWN_SHANGHAI_INDEX_CODES = frozenset({"000300"})
 MIN_HISTORY_WEEKDAY_COVERAGE = 0.60
 TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q={symbols}"
 TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
@@ -199,7 +200,10 @@ def resolve_public_market_code(stock_code: str) -> PublicMarketCode:
             if suffix in {"SH", "SS", "SZ"}:
                 exchange_hint = "sh" if suffix in {"SH", "SS"} else "sz"
         exchange = exchange_hint or (
-            "sh" if normalized.startswith(("5", "6", "9")) else "sz"
+            "sh"
+            if normalized in _KNOWN_SHANGHAI_INDEX_CODES
+            or normalized.startswith(("5", "6", "9"))
+            else "sz"
         )
         return PublicMarketCode(original, normalized, "cn", normalized, exchange)
 

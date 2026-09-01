@@ -272,8 +272,9 @@ def _get_plan_evaluation_markets(config: Config, args: argparse.Namespace) -> Op
 def _get_intraday_plan_evaluation_markets() -> set[str]:
     """Return only markets that are inside a live trading session right now."""
     from src.core.trading_calendar import get_markets_open_now
+    from src.services.investment_plan_service import MINUTE_CHECK_MARKETS
 
-    return set(get_markets_open_now())
+    return set(get_markets_open_now()) & MINUTE_CHECK_MARKETS
 
 
 def parse_arguments() -> argparse.Namespace:

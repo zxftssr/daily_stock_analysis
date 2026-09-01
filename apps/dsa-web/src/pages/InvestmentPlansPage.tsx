@@ -564,7 +564,9 @@ const InvestmentPlansPage: React.FC = () => {
       reviewDate: plan.reviewDate || '',
       notifyOnTrigger: plan.notifyOnTrigger,
       notificationChannel: plan.notificationChannels[0] || '',
-      checkFrequency: plan.checkFrequency,
+      checkFrequency: plan.market === 'us' && plan.checkFrequency === 'minute'
+        ? 'daily'
+        : plan.checkFrequency,
       steps: plan.steps.map((step) => ({
         key: String(step.id),
         action: step.action,
@@ -1605,7 +1607,15 @@ const PlanEditorDrawer: React.FC<{
           <Select
             label="市场"
             value={form.market}
-            onChange={(value) => onFormChange({ market: value as PlanForm['market'] })}
+            onChange={(value) => {
+              const market = value as PlanForm['market'];
+              onFormChange({
+                market,
+                ...(market === 'us' && form.checkFrequency === 'minute'
+                  ? { checkFrequency: 'daily' as InvestmentPlanCheckFrequency }
+                  : {}),
+              });
+            }}
             options={MARKET_OPTIONS}
             disabled={Boolean(editingPlan)}
           />
@@ -1653,10 +1663,12 @@ const PlanEditorDrawer: React.FC<{
               label="自动检查频率"
               value={form.checkFrequency}
               onChange={(value) => onFormChange({ checkFrequency: value as InvestmentPlanCheckFrequency })}
-              options={CHECK_FREQUENCY_OPTIONS}
+              options={form.market === 'us'
+                ? CHECK_FREQUENCY_OPTIONS.filter((option) => option.value !== 'minute')
+                : CHECK_FREQUENCY_OPTIONS}
             />
             <p className="mt-1 text-xs text-muted-foreground">
-              自动检查需持续运行 schedule 服务；盘中高频支持 A 股、港股和美股，并只在对应市场交易时段执行。
+              自动检查需持续运行 schedule 服务；盘中高频当前支持 A 股和港股。美股需配置可靠的实时行情源后再开放。
             </p>
           </div>
           <div>

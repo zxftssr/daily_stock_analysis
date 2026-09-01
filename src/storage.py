@@ -909,6 +909,19 @@ class DatabaseManager:
                     raise
 
         with self._engine.begin() as connection:
+            migrated_us_minute_plans = connection.exec_driver_sql(
+                "UPDATE investment_plans "
+                "SET check_frequency = 'daily', updated_at = CURRENT_TIMESTAMP "
+                "WHERE LOWER(market) = 'us' "
+                "AND LOWER(check_frequency) = 'minute'"
+            ).rowcount
+        if migrated_us_minute_plans and migrated_us_minute_plans > 0:
+            logger.warning(
+                "SQLite investment plan upgrade: migrated %s US minute plan(s) to daily",
+                migrated_us_minute_plans,
+            )
+
+        with self._engine.begin() as connection:
             connection.exec_driver_sql(
                 "UPDATE investment_plan_steps "
                 "SET notification_status = 'sent', "

@@ -7,6 +7,7 @@ Test generate_index_from_csv.py
 import csv
 import json
 import pytest
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 
@@ -415,9 +416,10 @@ class TestOutputFormat:
 
     def test_build_stock_index_reads_popularity_cache(self, tmp_path):
         cache_path = tmp_path / "stock_popularity_cache.json"
+        updated_at = datetime.now(timezone.utc).isoformat()
         cache_path.write_text(json.dumps({
             "version": 1,
-            "updated_at": "2026-07-05T00:00:00+00:00",
+            "updated_at": updated_at,
             "ttl_hours": 72,
             "max_stale_days": 30,
             "entries": {
@@ -427,7 +429,7 @@ class TestOutputFormat:
                     "score": 77,
                     "status": "fresh",
                     "source": "test",
-                    "updated_at": "2026-07-05T00:00:00+00:00",
+                    "updated_at": updated_at,
                     "metrics": {"market_cap": 100, "amount": 10},
                 }
             }

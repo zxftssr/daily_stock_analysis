@@ -41,7 +41,7 @@ STEP_METRICS = {"price", "benchmark_drawdown_250d_pct"}
 STEP_OPERATORS = {"lte", "gte", "between"}
 STEP_STATUSES = {"pending", "triggered", "completed", "skipped"}
 CHECK_FREQUENCIES = {"minute", "daily", "hourly", "manual"}
-MINUTE_CHECK_MARKETS = {"cn", "hk", "us"}
+MINUTE_CHECK_MARKETS = {"cn", "hk"}
 MINUTE_QUOTE_MAX_AGE = timedelta(minutes=5)
 MINUTE_QUOTE_FUTURE_TOLERANCE = timedelta(minutes=1)
 
@@ -462,6 +462,10 @@ class InvestmentPlanService:
         plan_id = int(plan["id"])
         if plan["status"] != "active":
             raise InvestmentPlanStateError("Only active investment plans can be evaluated")
+        self._validate_check_frequency_market(
+            plan["market"],
+            plan["check_frequency"],
+        )
 
         evaluated_at = datetime.now()
         pending_steps = [step for step in plan["steps"] if step["status"] == "pending"]
@@ -1086,7 +1090,7 @@ class InvestmentPlanService:
     @staticmethod
     def _validate_check_frequency_market(market: str, check_frequency: str) -> None:
         if check_frequency == "minute" and market not in MINUTE_CHECK_MARKETS:
-            raise ValueError("minute check frequency currently supports cn, hk and us markets only")
+            raise ValueError("minute check frequency currently supports cn and hk markets only")
 
     @classmethod
     def _normalize_steps(
@@ -1137,6 +1141,10 @@ class InvestmentPlanService:
 
     @staticmethod
     def _validate_activation(plan: Dict[str, Any], steps: Sequence[Dict[str, Any]]) -> None:
+        InvestmentPlanService._validate_check_frequency_market(
+            plan["market"],
+            plan["check_frequency"],
+        )
         if not steps:
             raise ValueError("An active investment plan requires at least one execution step")
         if not str(plan.get("thesis") or "").strip():

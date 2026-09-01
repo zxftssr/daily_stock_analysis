@@ -2200,11 +2200,11 @@ class Config:
     @classmethod
     def _resolve_realtime_source_priority(cls) -> str:
         """
-        Resolve realtime source priority with automatic tushare injection.
+        Resolve realtime source priority without inferring token capabilities.
 
-        When TUSHARE_TOKEN is configured but REALTIME_SOURCE_PRIORITY is not
-        explicitly set, automatically prepend 'tushare' to the default priority
-        so that the paid data source is utilized for realtime quotes as well.
+        A configured Tushare token may still lack realtime permissions. Only an
+        explicit REALTIME_SOURCE_PRIORITY opts Tushare into realtime polling;
+        otherwise use the lightweight public-first default.
         """
         explicit = os.getenv('REALTIME_SOURCE_PRIORITY')
         default_priority = 'public_auto,efinance,akshare_em'
@@ -2212,18 +2212,6 @@ class Config:
         if explicit:
             # User explicitly set priority, respect it
             return explicit
-
-        tushare_token = os.getenv('TUSHARE_TOKEN', '').strip()
-        if tushare_token:
-            # Token configured but no explicit priority override
-            # Prepend tushare so the paid source is tried first
-            import logging
-            logger = logging.getLogger(__name__)
-            resolved = f'tushare,{default_priority}'
-            logger.info(
-                f"TUSHARE_TOKEN detected, auto-injecting tushare into realtime priority: {resolved}"
-            )
-            return resolved
 
         return default_priority
 

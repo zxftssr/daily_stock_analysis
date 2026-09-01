@@ -53,7 +53,7 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
-    def test_tushare_is_injected_ahead_of_public_auto_by_default(
+    def test_tushare_token_does_not_imply_realtime_priority(
         self, _mock_parse_litellm_yaml, _mock_setup_env
     ):
         with patch.dict(
@@ -68,8 +68,26 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
         self.assertEqual(
             config.realtime_source_priority,
-            "tushare,public_auto,efinance,akshare_em",
+            "public_auto,efinance,akshare_em",
         )
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_explicit_realtime_priority_can_still_enable_tushare(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "TUSHARE_TOKEN": "test-token",
+                "REALTIME_SOURCE_PRIORITY": "tushare,public_auto",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.realtime_source_priority, "tushare,public_auto")
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
